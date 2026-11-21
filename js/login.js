@@ -95,10 +95,17 @@
     }
   });
 
+  // Google / Facebook login is not available: tell the user and point them to Create account.
+  const socialNote = document.getElementById("social-note");
   document.querySelectorAll(".social-btn").forEach((b) =>
-    b.addEventListener("click", async () => {
-      try { await Auth.loginWithProvider(b.dataset.provider); }
-      catch (ex) { document.getElementById("login-error").textContent = ex.message; }
+    b.addEventListener("click", () => {
+      socialNote.classList.remove("hidden");
+      Utils.toast(`${b.dataset.provider} login is unavailable. Please create an account.`, 4000);
     })
   );
+  document.getElementById("social-create").addEventListener("click", (e) => {
+    e.preventDefault();
+    socialNote.classList.add("hidden");
+    showPanel("panel-signup");
+  });
 })();

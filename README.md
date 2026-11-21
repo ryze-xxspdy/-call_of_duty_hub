@@ -72,8 +72,7 @@ Open http://localhost:8000
 - **Community chat**: every member of an approved community gets a live group chat on the community page.
 - **Add anyone to a community**: members of an approved community can search **all users** and add anyone (not just friends).
   **Re-run `supabase/schema.sql`** (section 15) to add `messages`, `community_messages` and the updated add-member function.
-- **Forgot password / Google / Facebook** on the login page now use real Supabase auth (turn the providers on in
-  Supabase > Authentication > Providers).
+- **Forgot password** on the login page uses real Supabase auth. Google / Facebook login was removed: tapping those buttons shows an "unavailable, please create an account" notice.
 
 - **Role badges**: developer and admin accounts show a **Developer** (orange) or **Admin** (blue) badge next to their name
   everywhere: their profile (plus a "verified staff account" line), posts, comments, chats, Active now, friend lists and search.

@@ -11,14 +11,64 @@ const Communities = (() => {
   let channel = null;
   let chatChannel = null;   // live chat of the community currently open
 
+  /* ---------- pop-up for admins / developer when a new community request arrives ---------- */
+  const reqQueue = [];
+  let reqShowing = false;
+  const reqSeenKey = () => "studyhub.reqPopup." + me.id;
+  const reqSeen = () => { try { return JSON.parse(sessionStorage.getItem(reqSeenKey()) || "[]"); } catch { return []; } };
+  const reqMark = (id) => { try { sessionStorage.setItem(reqSeenKey(), JSON.stringify([...reqSeen(), id].slice(-100))); } catch {} };
+
+  function queueRequest(r) {
+    if (!r || !Auth.isStaff(me) || r.status !== "pending" || r.requester_id === me.id) return;
+    if (reqSeen().includes(r.id) || reqQueue.some((x) => x.id === r.id)) return;
+    reqQueue.push(r);
+    nextRequestPopup();
+  }
+
+  async function nextRequestPopup() {
+    if (reqShowing || !reqQueue.length) return;
+    reqShowing = true;
+    const r = reqQueue.shift();
+    reqMark(r.id);
+    await Social.fetchProfiles([r.requester_id]);
+    const p = Social.person(r.requester_id);
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `
+      <div class="modal creq-popup" role="dialog" aria-modal="true" aria-labelledby="creq-title">
+        <h3 id="creq-title">New community request</h3>
+        <div class="creq-from">${Utils.avatar(p.name, p.avatar)}<div><strong>${esc(p.name)}</strong><small>${fmt(r.created_at)}</small></div></div>
+        <p style="margin:0 0 4px"><strong style="color:var(--text)">${esc(r.name)}</strong></p>
+        ${r.description ? `<p class="creq-desc">${esc(r.description)}</p>` : ""}
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" data-later>Later</button>
+          <button class="btn ghost danger" type="button" data-review="${esc(r.id)}" data-ok="0">Reject</button>
+          <button class="btn primary" type="button" data-review="${esc(r.id)}" data-ok="1">Approve</button>
+        </div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const close = () => { wrap.remove(); reqShowing = false; nextRequestPopup(); if (renderer && host && host.isConnected) renderer(); };
+    wrap.querySelector("[data-later]").addEventListener("click", close);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+    bindReview(wrap, close);
+  }
+
+  async function loadPendingPopups() {
+    const { data, error } = await db().from("community_requests").select("*").eq("status", "pending").order("created_at");
+    if (!error && data) data.forEach(queueRequest);
+  }
+
   function init(user) {
     me = user;
     if (channel) return;
+    const staff = Auth.isStaff(user);
+    if (staff) loadPendingPopups();
     let timer;
     const refresh = () => { clearTimeout(timer); timer = setTimeout(() => { if (renderer && host && host.isConnected) renderer(); }, 200); };
     channel = db().channel("communities-live");
     ["communities", "community_members", "community_requests"].forEach((table) =>
       channel.on("postgres_changes", { event: "*", schema: "public", table }, refresh));
+    channel.on("postgres_changes", { event: "INSERT", schema: "public", table: "community_requests" }, (payload) => queueRequest(payload.new));
     channel.subscribe();
   }
 
@@ -128,6 +178,50 @@ const Communities = (() => {
     input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const j = out.querySelector("#jm-join,#jm-open"); if (j) j.click(); else lookup(); } });
   }
 
+  /* ================= request a community (pops up directly) ================= */
+  function openRequest(done) {
+    if (document.getElementById("request-modal")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.id = "request-modal";
+    wrap.innerHTML = `
+      <form class="modal request-modal" role="dialog" aria-modal="true" aria-labelledby="rm-title" novalidate>
+        <h3 id="rm-title">Request a new community</h3>
+        <p>An admin or the developer reviews every request. You'll get a notification when it's approved or declined.</p>
+        <label class="field-label" for="cm-name">Community name</label>
+        <input class="text-input" id="cm-name" maxlength="40" autocomplete="off" placeholder="e.g. BSIT 2A Study Group" />
+        <label class="field-label" for="cm-desc" style="margin-top:12px">What is it for? <span class="dim">(optional)</span></label>
+        <textarea class="text-input" id="cm-desc" rows="3" maxlength="300"></textarea>
+        <p class="dev-msg" id="cm-msg" role="alert" style="margin:8px 0 0"></p>
+        <div class="modal-actions">
+          <button class="btn ghost" type="button" id="cm-cancel">Close</button>
+          <button class="btn primary" type="submit">Send request</button>
+        </div>
+      </form>`;
+    document.body.appendChild(wrap);
+    const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector("#cm-cancel").addEventListener("click", close);
+    setTimeout(() => wrap.querySelector("#cm-name").focus(), 30);
+    wrap.querySelector("form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const msg = wrap.querySelector("#cm-msg");
+      const name = wrap.querySelector("#cm-name").value.trim();
+      const description = wrap.querySelector("#cm-desc").value.trim();
+      msg.textContent = "";
+      if (name.length < 3) return (msg.textContent = "Give your community a name (at least 3 characters).");
+      const btn = e.submitter; if (btn) btn.disabled = true;
+      const { error } = await db().from("community_requests").insert({ requester_id: me.id, name, description });
+      if (btn) btn.disabled = false;
+      if (error) return (msg.textContent = error.message);
+      close();
+      Utils.toast("Request sent. An admin or the developer will review it.", 3500);
+      if (done) done();
+    });
+  }
+
   /* ================= list page ================= */
   async function mount(el) {
     host = el;
@@ -192,20 +286,6 @@ const Communities = (() => {
         </div>
       </div>
 
-      <form class="dev-card hidden" id="community-form" novalidate>
-        <h3>Request a new community</h3>
-        <p class="hint">Communities are created only after an admin or the developer approves your request. You'll get a notification when it's reviewed.</p>
-        <label class="field-label" for="cm-name">Community name</label>
-        <input class="text-input" id="cm-name" maxlength="40" autocomplete="off" placeholder="e.g. BSIT 2A Study Group" />
-        <label class="field-label" for="cm-desc" style="margin-top:12px">What is it for? <span class="dim">(optional)</span></label>
-        <textarea class="text-input" id="cm-desc" rows="3" maxlength="300"></textarea>
-        <p class="dev-msg" id="cm-msg" role="alert"></p>
-        <div class="form-actions" style="display:flex;gap:8px;margin-top:6px">
-          <button class="btn primary" type="submit">Send request</button>
-          <button class="btn ghost" type="button" id="cm-cancel">Close</button>
-        </div>
-      </form>
-
       ${pendingHTML}
 
       <h2 class="section-title">My communities <span class="count-chip">${communities.length}</span></h2>
@@ -221,29 +301,13 @@ const Communities = (() => {
 
       <h2 class="section-title">All users <span class="count-chip" id="all-count">…</span></h2>
       <p class="hint" style="margin-top:0">Everyone on ConfessHub. Open a profile to add them as a friend or send a message.</p>
-      <input class="text-input search-input" id="all-q" placeholder="Search all users…" maxlength="40" autocomplete="off" />
+      <input class="text-input search-input com-search" id="all-q" placeholder="Search all users…" maxlength="40" autocomplete="off" />
       <div id="all-users"><div class="empty">Loading people…</div></div>`;
 
     mountAllUsers(el);
 
     el.querySelector("#join-code-btn").addEventListener("click", openJoin);
-    const form = el.querySelector("#community-form");
-    el.querySelector("#new-community").addEventListener("click", () => { form.classList.toggle("hidden"); el.querySelector("#cm-name").focus(); });
-    el.querySelector("#cm-cancel").addEventListener("click", () => form.classList.add("hidden"));
-    form.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      const msg = el.querySelector("#cm-msg");
-      const name = el.querySelector("#cm-name").value.trim();
-      const description = el.querySelector("#cm-desc").value.trim();
-      msg.textContent = "";
-      if (name.length < 3) return (msg.textContent = "Give your community a name (at least 3 characters).");
-      const btn = e.submitter; if (btn) btn.disabled = true;
-      const { error } = await db().from("community_requests").insert({ requester_id: me.id, name, description });
-      if (btn) btn.disabled = false;
-      if (error) return (msg.textContent = error.message);
-      Utils.toast("Request sent. An admin or the developer will review it.", 3500);
-      draw(el, my);
-    });
+    el.querySelector("#new-community").addEventListener("click", () => openRequest(() => draw(el, my)));
 
     bindReview(el, () => draw(el, my));
     el.querySelectorAll("[data-cancel]").forEach((b) => b.addEventListener("click", async () => {
@@ -462,7 +526,7 @@ const Communities = (() => {
 
       <h2 class="section-title">Add people <span class="count-chip" id="add-count">…</span></h2>
       <p class="hint" style="margin-top:0">Everyone with an account can be added. They get a notification and can chat right away.</p>
-      <input class="text-input search-input" id="add-q" placeholder="Search by username…" maxlength="40" autocomplete="off" />
+      <input class="text-input search-input com-search" id="add-q" placeholder="Search by username…" maxlength="40" autocomplete="off" />
       <div id="add-results"><div class="empty">Loading people…</div></div>` : ""}
 
       <h2 class="section-title">Members <span class="count-chip">${members.length}</span></h2>
@@ -517,5 +581,5 @@ const Communities = (() => {
     });
   }
 
-  return { init, mount, mountDetail, reviewRow, bindReview, openJoin };
+  return { init, mount, mountDetail, reviewRow, bindReview, openJoin, openRequest };
 })();

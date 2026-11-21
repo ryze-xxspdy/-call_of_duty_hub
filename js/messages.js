@@ -8,6 +8,8 @@ const Messages = (() => {
   let reacts = new Map();        // message id -> [{ message_id, user_id, kind }]
   let channel = null;
   const listeners = [];
+  let known = null;              // ids of messages already seen (null until the first load finishes)
+  let popup = null;              // the message pop-up currently on screen
   let host = null;               // element currently showing the inbox / a thread
   let redraw = null;
 
@@ -33,8 +35,61 @@ const Messages = (() => {
     if (!rr.error) rr.data.forEach((x) => { if (!reacts.has(x.message_id)) reacts.set(x.message_id, []); reacts.get(x.message_id).push(x); });
     const ids = [...new Set(rows.map(other))];
     if (ids.length) await Social.fetchProfiles(ids);
+    // Pop up any message that arrived since the last load (not on the very first load).
+    if (known) {
+      const fresh = rows.filter((m) => !known.has(m.id) && m.recipient_id === me.id && !m.read_at)
+        .sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+      const last = fresh[fresh.length - 1];
+      if (last && location.hash !== "#messages-" + last.sender_id) showPopup(last);
+    }
+    known = new Set(rows.map((m) => m.id));
     emit();
     if (redraw && host && host.isConnected) redraw();
+  }
+
+  /** Pop-up with the message text itself, shown the moment someone writes to you.
+   *  Tap the message to see the conversation; "Continue to message" sits at the bottom. */
+  function showPopup(m) {
+    if (popup) popup.remove();
+    const p = Social.person(m.sender_id);
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.innerHTML = `
+      <div class="modal msg-popup" role="dialog" aria-modal="true" aria-labelledby="mp-title">
+        <div class="mp-from">${Utils.avatar(p.name, p.avatar)}
+          <div><h3 id="mp-title">New message</h3><small>from ${Utils.nameWithBadge(p.name, p.role)} · ${clock(m.created_at)}</small></div></div>
+        <div class="mp-tap" role="button" tabindex="0" aria-label="Show the conversation">
+          <div class="mp-body">${esc(m.body)}</div>
+          <small class="mp-hint">Tap to see the conversation</small>
+        </div>
+        <div class="mp-convo hidden"></div>
+        <div class="modal-actions">
+          <button class="btn ghost mp-close" type="button">Dismiss</button>
+          <a class="btn primary mp-open" href="#messages-${esc(m.sender_id)}" style="display:inline-flex;align-items:center">Continue to message</a>
+        </div>
+      </div>`;
+    const close = () => { wrap.remove(); if (popup === wrap) popup = null; document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector(".mp-close").addEventListener("click", close);
+    wrap.querySelector(".mp-open").addEventListener("click", close);
+
+    const tap = wrap.querySelector(".mp-tap"), convo = wrap.querySelector(".mp-convo");
+    const showConvo = () => {
+      const thread = rows.filter((x) => other(x) === m.sender_id).slice(0, 8).reverse();
+      convo.innerHTML = thread.map((x) => `
+        <div class="mp-msg ${x.sender_id === me.id ? "mine" : ""}"><p>${esc(x.body)}</p><small>${clock(x.created_at)}</small></div>`).join("");
+      tap.classList.add("hidden");
+      convo.classList.remove("hidden");
+      convo.scrollTop = convo.scrollHeight;
+    };
+    tap.addEventListener("click", showConvo);
+    tap.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); showConvo(); } });
+
+    document.body.appendChild(wrap);
+    popup = wrap;
+    wrap.querySelector(".mp-open").focus();
   }
 
   async function init(user) {

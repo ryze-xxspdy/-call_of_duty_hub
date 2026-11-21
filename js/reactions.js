@@ -1,7 +1,7 @@
 /* ---------- Shared emoji reactions (comments, chat messages) ---------- */
 const Reactions = (() => {
   const esc = Utils.escapeHTML;
-  const EMOJI = { like: "👍", love: "❤️", haha: "😂", wow: "😮", sad: "😢", fire: "🔥"};
+  const EMOJI = { like: "👍", love: "❤️", haha: "😂", wow: "😮", sad: "😢", fire: "🔥" };
   const LABEL = { like: "Like", love: "Love", haha: "Haha", wow: "Wow", sad: "Sad", fire: "Fire" };
 
   /** Chips under a comment / bubble: one per kind with its count; yours is highlighted. */

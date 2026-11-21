@@ -8,7 +8,7 @@
 create table if not exists public.profiles (
   id         uuid primary key references auth.users(id) on delete cascade,
   name       text not null default '',
-  email      text not null,
+  email      text not null default '',
   role       text not null default 'student',
   avatar     text,
   bio        text not null default '',
@@ -84,8 +84,9 @@ begin
   insert into public.profiles (id, name, email, role)
   values (
     new.id,
-    coalesce(nullif(new.raw_user_meta_data ->> 'name', ''), split_part(new.email, '@', 1)),
-    new.email,
+    coalesce(nullif(new.raw_user_meta_data ->> 'name', ''), nullif(new.raw_user_meta_data ->> 'full_name', ''),
+             nullif(split_part(coalesce(new.email, ''), '@', 1), ''), 'Student'),
+    coalesce(new.email, ''),
     new_role
   );
   return new;
@@ -292,8 +293,9 @@ end $$;
 -- profile row, so nobody could open their profile. Create the missing rows once...
 insert into public.profiles (id, name, email, role)
 select u.id,
-       coalesce(nullif(u.raw_user_meta_data ->> 'name', ''), split_part(u.email, '@', 1)),
-       u.email,
+       coalesce(nullif(u.raw_user_meta_data ->> 'name', ''), nullif(u.raw_user_meta_data ->> 'full_name', ''),
+                nullif(split_part(coalesce(u.email, ''), '@', 1), ''), 'Student'),
+       coalesce(u.email, ''),
        'student'
 from auth.users u
 where not exists (select 1 from public.profiles p where p.id = u.id);
@@ -308,8 +310,9 @@ begin
   select developer_email into dev from public.admin_settings where id = 1;
   insert into public.profiles (id, name, email, role)
   values (u.id,
-          coalesce(nullif(u.raw_user_meta_data ->> 'name', ''), split_part(u.email, '@', 1)),
-          u.email,
+          coalesce(nullif(u.raw_user_meta_data ->> 'name', ''), nullif(u.raw_user_meta_data ->> 'full_name', ''),
+                   nullif(split_part(coalesce(u.email, ''), '@', 1), ''), 'Student'),
+          coalesce(u.email, ''),
           case when dev is not null and lower(u.email) = lower(dev) then 'developer' else 'student' end);
 end $$;
 revoke all on function public.ensure_my_profile() from public, anon;
@@ -599,7 +602,7 @@ begin
   select name into who from public.profiles where id = new.user_id;
   insert into public.notifications (user_id, kind, title, body, link)
   values (owner, 'post_reaction', 'New reaction on your post',
-          coalesce(who, 'Someone') || ' reacted to your post.', '#dashboard');
+          coalesce(who, 'Someone') || ' reacted to your post.', '#postr-' || new.post_id);
   return new;
 end $$;
 drop trigger if exists post_reactions_notify on public.post_reactions;
@@ -615,7 +618,7 @@ begin
   select name into who from public.profiles where id = new.user_id;
   insert into public.notifications (user_id, kind, title, body, link)
   values (owner, 'post_comment', 'New comment on your post',
-          coalesce(who, 'Someone') || ': ' || left(new.body, 80), '#dashboard');
+          coalesce(who, 'Someone') || ': ' || left(new.body, 80), '#post-' || new.post_id);
   return new;
 end $$;
 drop trigger if exists post_comments_notify on public.post_comments;
@@ -1008,7 +1011,7 @@ begin
   select name into who from public.profiles where id = new.user_id;
   insert into public.notifications (user_id, kind, title, body, link)
   values (target, 'comment_reply', 'New reply to your comment',
-          coalesce(who, 'Someone') || ': ' || left(new.body, 80), '#dashboard');
+          coalesce(who, 'Someone') || ': ' || left(new.body, 80), '#post-' || new.post_id);
   return new;
 end $$;
 drop trigger if exists post_comments_reply_notify on public.post_comments;
@@ -1165,3 +1168,13 @@ revoke all on function public.regenerate_community_code(uuid) from public, anon;
 grant execute on function public.lookup_community_code(text)     to authenticated;
 grant execute on function public.join_community_by_code(text)    to authenticated;
 grant execute on function public.regenerate_community_code(uuid) to authenticated;
+
+
+-- =====================================================================
+-- 21) Google / Facebook login fixes (re-run safe)
+-- Facebook accounts can have NO email; profiles.email used to be NOT NULL, so creating the profile
+-- failed with "Database error saving new user". Email is now optional (empty string) and the name
+-- falls back to full_name (Google) / name (Facebook).
+-- =====================================================================
+alter table public.profiles alter column email set default '';
+alter table public.profiles alter column email drop not null;

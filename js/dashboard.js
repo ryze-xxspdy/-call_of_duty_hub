@@ -120,7 +120,7 @@
       : `<span class="subnav-item dim">No friends yet</span>`;
   }
 
-  const NOTIF_ICON = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬" };
+  const NOTIF_ICON = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️" };
 
   function renderNotifications() {
     const reqs = Social.incoming().map(({ p }) => `
@@ -197,7 +197,7 @@
   /* ---------- routing ---------- */
   function route() {
     const hash = (location.hash || "#dashboard").slice(1);
-    const view = hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("messages") ? "messages" : hash;
+    const view = hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("post-") || hash.startsWith("postr-") ? "post" : hash.startsWith("messages") ? "messages" : hash;
     const navView = view === "community" ? "communities" : view;
     $("#view").dataset.page = view;
     $$(".nav-item[data-view], .subnav-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === navView));
@@ -214,6 +214,7 @@
       messages: () => Messages.mount($("#view"), hash.startsWith("messages-") ? hash.replace("messages-", "") : null),
       communities: () => Communities.mount($("#view")),
       community: () => Communities.mountDetail($("#view"), hash.replace("community-", "")),
+      post: () => Feed.mountPost($("#view"), user, hash.replace(/^postr?-/, ""), hash.startsWith("post-")),
       profile: () => Social.mountEdit($("#view")),
       requests: () => Social.mountRequests($("#view")),
       users: () => Social.mountUsers($("#view")),

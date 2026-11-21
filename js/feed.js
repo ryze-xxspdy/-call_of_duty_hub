@@ -156,6 +156,25 @@ const Feed = (() => {
     hydrate(el);
   }
 
+  /** One post on its own page, with the comments pop-up already open (opened from a comment notification). */
+  async function mountPost(el, user, postId, openComments = true) {
+    me = user;
+    el.innerHTML = `<a class="btn-link back-link" href="#dashboard">← Back to feed</a><div id="post-one" style="margin-top:12px"><div class="empty">Loading post…</div></div>`;
+    const box = el.querySelector("#post-one");
+    const { data, error } = await db().from("posts").select("*").eq("id", postId).maybeSingle();
+    if (!box.isConnected) return;
+    if (error || !data) { box.innerHTML = `<div class="empty">This post isn't available anymore.</div>`; return; }
+    const profiles = await authors([data]);
+    if (!box.isConnected) return;
+    box.innerHTML = card(data, profiles);
+    box.querySelectorAll("[data-del]").forEach((b) => b.addEventListener("click", () => remove(b.dataset.del, () => { location.hash = "#dashboard"; })));
+    state(postId).open = openComments;
+    subscribe();
+    await hydrate(box);
+    const input = box.querySelector(".c-input");
+    if (openComments && input && !input.value) input.focus({ preventScroll: true });
+  }
+
   function card(p, profiles = new Map()) {
     const prof = profiles.get(p.user_id);
     const name = (prof && prof.name) || p.author_name || "Unknown";
@@ -176,7 +195,8 @@ const Feed = (() => {
         ${media}
         <div class="engage" data-engage="${esc(p.id)}" data-owner="${esc(p.user_id)}">
           <div class="post-actions"></div>
-          <div class="comments hidden">
+          <div class="comments hidden" role="dialog" aria-label="Comments">
+            <div class="c-head"><strong>Comments</strong><button type="button" class="c-close" data-comment-close aria-label="Close comments">×</button></div>
             <div class="c-list"></div>
             <form class="c-form" autocomplete="off">
               <input class="text-input c-input" maxlength="500" placeholder="Write a comment…" aria-label="Write a comment" />
@@ -303,6 +323,18 @@ const Feed = (() => {
     });
   }
 
+  /** Close every open comment pop-up (except the post `keep`). */
+  function closeComments(keep) {
+    eng.forEach((st, id) => { if (st.open && id !== keep) { st.open = false; paint(id); } });
+  }
+  // tap outside the pop-up, or press Esc, to close it
+  document.addEventListener("mousedown", (e) => {
+    if (!document.querySelector(".comments:not(.hidden)")) return;
+    if (e.target.closest(".comments") || e.target.closest("[data-comment-toggle]")) return;
+    closeComments();
+  });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeComments(); });
+
   function bind(root) {
     if (root._engageBound) return;
     root._engageBound = true;
@@ -314,6 +346,7 @@ const Feed = (() => {
       const pick = t.closest("[data-react]");
       const tog = t.closest("[data-comment-toggle]");
       const del = t.closest("[data-cdel]");
+      const closeBtn = t.closest("[data-comment-close]");
       const replyBtn = t.closest("[data-reply]");
       const cancel = t.closest("[data-reply-cancel]");
       const cEl = t.closest("[data-cid]");
@@ -355,8 +388,10 @@ const Feed = (() => {
         const id = idOf(pick), mine = state(id).reacts.find((x) => x.user_id === me.id);
         return react(id, mine && mine.kind === pick.dataset.react ? null : pick.dataset.react);
       }
+      if (closeBtn) return closeComments();
       if (tog) {
         const id = idOf(tog), st = state(id);
+        closeComments(id);   // only one comment pop-up at a time
         st.open = !st.open; paint(id);
         if (st.open) {
           if (st.comments === null) { await loadComments(id); paint(id); }
@@ -434,5 +469,5 @@ const Feed = (() => {
     reload();
   }
 
-  return { mount, load, userPosts };
+  return { mount, load, userPosts, mountPost };
 })();

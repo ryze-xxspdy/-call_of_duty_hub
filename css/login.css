@@ -62,3 +62,5 @@
   .auth-main { padding: 28px 20px 40px; align-items: flex-start; }
   .field input { font-size: 16px; }
 }
+.social-note { margin: 12px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--muted); }
+.social-note.hidden { display: none; }
