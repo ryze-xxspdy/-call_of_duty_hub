@@ -118,6 +118,7 @@ const Feed = (() => {
     db().channel("feed-engage")
       .on("postgres_changes", { event: "*", schema: "public", table: "post_reactions" }, soon)
       .on("postgres_changes", { event: "*", schema: "public", table: "post_comments" }, soon)
+      .on("postgres_changes", { event: "*", schema: "public", table: "comment_reactions" }, soon)
       .subscribe();
   }
 
@@ -189,8 +190,8 @@ const Feed = (() => {
   /* ================= reactions + comments ================= */
   const REACTIONS = { like: "👍", love: "❤️", haha: "😂", wow: "😮", sad: "😢", fire: "🔥" };
   const LABELS = { like: "Like", love: "Love", haha: "Haha", wow: "Wow", sad: "Sad", fire: "Fire" };
-  const eng = new Map();   // post id -> { reacts: [{user_id, kind}], count, comments: [] | null, open, draft }
-  const state = (id) => { if (!eng.has(id)) eng.set(id, { reacts: [], count: 0, comments: null, open: false, draft: "" }); return eng.get(id); };
+  const eng = new Map();   // post id -> { reacts: [{user_id, kind}], count, comments: [] | null, open, draft, creacts: comment reactions, replyTo: {root, name} | null, replyDraft }
+  const state = (id) => { if (!eng.has(id)) eng.set(id, { reacts: [], count: 0, comments: null, open: false, draft: "", creacts: [], replyTo: null, replyDraft: "", replyFocus: false }); return eng.get(id); };
   const engEl = (id) => [...document.querySelectorAll("[data-engage]")].filter((e) => e.dataset.engage === id);
 
   /** Fetch reactions + comment counts for the posts inside `root`, draw them, and wire the buttons once. */
@@ -224,8 +225,35 @@ const Feed = (() => {
     const { data, error } = await db().from("post_comments").select("*").eq("post_id", id).order("created_at");
     if (error) { Utils.toast("Couldn't load comments: " + error.message); return; }
     st.comments = data; st.count = data.length;
+    // reactions on those comments (best effort: older databases won't have the table yet)
+    st.creacts = [];
+    if (data.length) {
+      const cr = await db().from("comment_reactions").select("comment_id,user_id,kind").in("comment_id", data.map((x) => x.id));
+      if (!cr.error) st.creacts = cr.data;
+    }
     const found = await Social.fetchProfiles([...new Set(data.map((x) => x.user_id))]);
     st.people = new Map(found.map((p) => [p.id, p]));
+  }
+
+  /** One comment (or reply) with its reaction + reply controls. */
+  function commentHTML(st, c, owner, isReply) {
+    const p = (st.people && st.people.get(c.user_id)) || { name: "Unknown" };
+    const can = c.user_id === me.id || owner === me.id || Auth.isStaff(me);
+    const rx = st.creacts.filter((x) => x.comment_id === c.id);
+    const root = c.parent_id || c.id;
+    return `<div class="comment ${isReply ? "reply" : ""}" data-cid="${esc(c.id)}">
+      <a href="${c.user_id === me.id ? "#profile" : "#user-" + esc(c.user_id)}" class="post-who">${Utils.avatar(p.name, p.avatar, "sm")}</a>
+      <div class="c-main">
+        <div class="c-bubble"><strong>${Utils.nameWithBadge(p.name, p.role)}</strong> <small>${timeAgo(c.created_at)}</small>
+          <p>${esc(c.body)}</p></div>
+        <div class="c-actions">
+          ${Reactions.picker(rx, me.id)}
+          <button type="button" class="c-link" data-reply="${esc(root)}" data-reply-name="${isReply ? esc(p.name) : ""}">Reply</button>
+          <span class="rx-chips">${Reactions.chips(rx, me.id)}</span>
+        </div>
+      </div>
+      ${can ? `<button type="button" class="post-del" data-cdel="${esc(c.id)}" aria-label="Delete comment" title="Delete comment">×</button>` : ""}
+    </div>`;
   }
 
   function paint(id) {
@@ -252,17 +280,23 @@ const Feed = (() => {
         const owner = el.dataset.owner;
         const list = el.querySelector(".c-list");
         list.innerHTML = st.comments === null ? `<div class="empty">Loading…</div>`
-          : st.comments.length ? st.comments.map((c) => {
-              const p = (st.people && st.people.get(c.user_id)) || { name: "Unknown" };
-              const can = c.user_id === me.id || owner === me.id || Auth.isStaff(me);
-              return `<div class="comment">
-                <a href="${c.user_id === me.id ? "#profile" : "#user-" + esc(c.user_id)}" class="post-who">${Utils.avatar(p.name, p.avatar, "sm")}</a>
-                <div class="c-bubble"><strong>${Utils.nameWithBadge(p.name, p.role)}</strong> <small>${timeAgo(c.created_at)}</small>
-                  <p>${esc(c.body)}</p></div>
-                ${can ? `<button type="button" class="post-del" data-cdel="${esc(c.id)}" aria-label="Delete comment" title="Delete comment">×</button>` : ""}
-              </div>`;
+          : st.comments.length ? st.comments.filter((c) => !c.parent_id).map((c) => {
+              const replies = st.comments.filter((r) => r.parent_id === c.id);
+              const form = st.replyTo && st.replyTo.root === c.id ? `
+                <form class="c-form c-reply-form" autocomplete="off">
+                  <input class="text-input c-rinput" maxlength="500" placeholder="Write a reply…" aria-label="Write a reply" />
+                  <button class="btn-sm primary" type="submit">Reply</button>
+                  <button class="btn-sm" type="button" data-reply-cancel>Cancel</button>
+                </form>` : "";
+              return `<div class="c-thread">${commentHTML(st, c, owner, false)}
+                ${replies.length || form ? `<div class="c-replies">${replies.map((r) => commentHTML(st, r, owner, true)).join("")}${form}</div>` : ""}</div>`;
             }).join("")
           : `<div class="empty">No comments yet. Say something!</div>`;
+        const rin = list.querySelector(".c-rinput");
+        if (rin) {
+          if (document.activeElement !== rin) rin.value = st.replyDraft;
+          if (st.replyFocus) { st.replyFocus = false; rin.focus(); rin.setSelectionRange(rin.value.length, rin.value.length); }
+        }
         const input = el.querySelector(".c-input");
         if (document.activeElement !== input) input.value = st.draft;
       }
@@ -280,6 +314,30 @@ const Feed = (() => {
       const pick = t.closest("[data-react]");
       const tog = t.closest("[data-comment-toggle]");
       const del = t.closest("[data-cdel]");
+      const replyBtn = t.closest("[data-reply]");
+      const cancel = t.closest("[data-reply-cancel]");
+      const cEl = t.closest("[data-cid]");
+
+      if (cEl && (t.closest("[data-rx]") || t.closest("[data-rx-main]"))) {
+        const id = idOf(cEl), st = state(id), cid = cEl.dataset.cid;
+        const rows = st.creacts.filter((x) => x.comment_id === cid);
+        const kind = Reactions.intent(t, rows, me.id);
+        if (kind === undefined) return;
+        return reactComment(id, cid, kind);
+      }
+      if (replyBtn) {
+        const id = idOf(replyBtn), st = state(id);
+        const name = replyBtn.dataset.replyName;
+        st.replyTo = { root: replyBtn.dataset.reply, name };
+        st.replyDraft = name ? `@${name} ` : "";
+        st.replyFocus = true;
+        return paint(id);
+      }
+      if (cancel) {
+        const id = idOf(cancel), st = state(id);
+        st.replyTo = null; st.replyDraft = "";
+        return paint(id);
+      }
 
       if (main) {
         const id = idOf(main), st = state(id);
@@ -316,20 +374,24 @@ const Feed = (() => {
 
     root.addEventListener("input", (e) => {
       if (e.target.matches(".c-input")) state(idOf(e.target)).draft = e.target.value;
+      if (e.target.matches(".c-rinput")) state(idOf(e.target)).replyDraft = e.target.value;
     });
 
     root.addEventListener("submit", async (e) => {
       if (!e.target.matches(".c-form")) return;
       e.preventDefault();
       const id = idOf(e.target), st = state(id);
-      const input = e.target.querySelector(".c-input"), btn = e.target.querySelector("button");
+      const isReply = e.target.matches(".c-reply-form");
+      const input = e.target.querySelector(isReply ? ".c-rinput" : ".c-input"), btn = e.target.querySelector("button");
       const body = input.value.trim();
-      if (!body) return;
+      if (!body || (isReply && !st.replyTo)) return;
       btn.disabled = true;
-      const { error } = await db().from("post_comments").insert({ post_id: id, user_id: me.id, body });
+      const row = { post_id: id, user_id: me.id, body };
+      if (isReply) row.parent_id = st.replyTo.root;
+      const { error } = await db().from("post_comments").insert(row);
       btn.disabled = false;
-      if (error) return Utils.toast("Couldn't comment: " + error.message);
-      st.draft = ""; input.value = "";
+      if (error) return Utils.toast((/parent_id|schema cache/i.test(error.message) ? "Re-run supabase/schema.sql to turn on replies." : "Couldn't " + (isReply ? "reply" : "comment") + ": " + error.message));
+      if (isReply) { st.replyTo = null; st.replyDraft = ""; } else { st.draft = ""; input.value = ""; }
       await loadComments(id); paint(id);
     });
   }
@@ -347,10 +409,18 @@ const Feed = (() => {
     if (error) { st.reacts = before; paint(id); Utils.toast("Couldn't react: " + error.message); }
   }
 
-  // close an open reaction picker (touch) when tapping elsewhere
-  document.addEventListener("click", (e) => {
-    document.querySelectorAll(".react-wrap.open").forEach((w) => { if (!w.contains(e.target)) w.classList.remove("open"); });
-  });
+  /** React to a comment. kind = a reaction key, or null to remove yours. Optimistic, rolls back on error. */
+  async function reactComment(id, cid, kind) {
+    const st = state(id);
+    const before = st.creacts;
+    const mineBefore = before.filter((x) => x.comment_id !== cid);
+    st.creacts = mineBefore.concat(Reactions.apply(before.filter((x) => x.comment_id === cid), me.id, "comment_id", cid, kind));
+    paint(id);
+    const { error } = await Reactions.save("comment_reactions", "comment_id", cid, me.id, kind);
+    if (error) { st.creacts = before; paint(id); Utils.toast(/schema cache|relation/i.test(error.message) ? "Re-run supabase/schema.sql to turn on comment reactions." : "Couldn't react: " + error.message); }
+  }
+
+  // (the shared Reactions helper closes open touch pickers when you tap elsewhere)
 
   async function remove(id, reload) {
     if (!confirm("Delete this post?")) return;

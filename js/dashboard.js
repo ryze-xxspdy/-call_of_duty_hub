@@ -61,6 +61,8 @@
     if (window.innerWidth <= 1099) app.classList.add("collapsed");
     $("#menu-btn").addEventListener("click", () => app.classList.toggle("collapsed"));
     $("#scrim").addEventListener("click", () => app.classList.add("collapsed"));
+    // mobile bottom nav: "More" opens the full sidebar menu
+    $("#bn-more").addEventListener("click", () => app.classList.toggle("collapsed"));
 
     $("#theme-btn").addEventListener("click", () => {
       const next = document.documentElement.getAttribute("data-theme") === "dark" ? "light" : "dark";
@@ -180,6 +182,12 @@
     const nm = $("#nav-msg-badge");
     nm.textContent = mn;
     nm.classList.toggle("hidden", mn === 0);
+    const bm = $("#bn-msg-badge");
+    bm.textContent = mn > 99 ? "99+" : mn;
+    bm.classList.toggle("hidden", mn === 0);
+    const br = $("#bn-req-badge");
+    br.textContent = pending;
+    br.classList.toggle("hidden", pending === 0);
     const cb = $("#com-badge");
     const n = Notify.list().filter((x) => !x.read && x.kind === "community_request").length;
     cb.textContent = n;
@@ -193,6 +201,7 @@
     const navView = view === "community" ? "communities" : view;
     $("#view").dataset.page = view;
     $$(".nav-item[data-view], .subnav-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === navView));
+    $$(".bn-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === navView));
 
     const views = {
       dashboard: renderDashboard,
@@ -217,18 +226,26 @@
   /* ---------- views ---------- */
   function renderDashboard() {
     const role = user.role || "student";
-    const first = (user.name || "").split(" ")[0].toUpperCase();
+    const first = (user.name || "").split(" ")[0];
     $("#view").innerHTML = `
       <div class="page-head">
         <div>
-          <h1 class="greeting">${esc(Utils.greeting())}, ${esc(first)} <span class="role-chip ${esc(role)}">${esc(role === "student" ? "Student" : role)}</span></h1>
+          <h1 class="greeting">${esc(Utils.greeting())}, ${esc(first)}</h1>
           <p class="today">${esc(Utils.formatLongDate(new Date()))}</p>
+        </div>
+        <span class="portal-tag">CONFESSHUB · <b class="${esc(role)}">${esc(role === "student" ? "Student" : role)}</b></span>
+      </div>
+
+      <section class="hero">
+        <div class="hero-text">
+          <h2>Say what's on your mind</h2>
+          <p>Post to the feed, chat with classmates, and keep up with announcements. Find people or join a community to get started.</p>
         </div>
         <div class="controls">
           <a class="btn-ctl" href="#users"><svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/></svg>Find</a>
-          <a class="btn-ctl join" href="#communities"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4"/></svg>Join</a>
+          <button class="btn-ctl join" type="button" id="join-btn"><svg viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4"/></svg>Join</button>
         </div>
-      </div>
+      </section>
 
       <div class="grid-2">
         <section class="feed-col">
@@ -243,6 +260,7 @@
         </aside>
       </div>`;
 
+    $("#join-btn").addEventListener("click", () => Communities.openJoin());
     Feed.mount($("#feed"), user);
     Social.mountActive($("#active-list"), $("#active-count"));
     paintRequests();

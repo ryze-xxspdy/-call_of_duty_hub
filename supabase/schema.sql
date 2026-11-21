@@ -970,3 +970,198 @@ create policy "attachments upload" on storage.objects for insert to authenticate
 drop policy if exists "attachments delete" on storage.objects;
 create policy "attachments delete" on storage.objects for delete to authenticated
   using (bucket_id = 'attachments' and public.is_admin());
+
+
+-- =====================================================================
+-- 20) Comment replies + reactions on comments and chat messages  -- safe to re-run
+-- =====================================================================
+-- Replies: one level deep. parent_id points at the top-level comment (replying to a reply
+-- attaches to the same top-level comment and the UI prefixes "@name").
+alter table public.post_comments
+  add column if not exists parent_id uuid references public.post_comments(id) on delete cascade;
+create index if not exists post_comments_parent_idx on public.post_comments (parent_id);
+
+-- a reply must belong to the same post as its parent, and the parent must be top-level
+create or replace function public.check_comment_parent()
+returns trigger language plpgsql as $$
+declare pp uuid; pparent uuid;
+begin
+  if new.parent_id is null then return new; end if;
+  select post_id, parent_id into pp, pparent from public.post_comments where id = new.parent_id;
+  if pp is null or pp <> new.post_id or pparent is not null then
+    raise exception 'Invalid reply target';
+  end if;
+  return new;
+end $$;
+drop trigger if exists post_comments_parent_check on public.post_comments;
+create trigger post_comments_parent_check before insert on public.post_comments
+  for each row execute function public.check_comment_parent();
+
+-- Tell the author of the comment you replied to (not for your own).
+create or replace function public.notify_comment_reply()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare target uuid; who text;
+begin
+  if new.parent_id is null then return new; end if;
+  select user_id into target from public.post_comments where id = new.parent_id;
+  if target is null or target = new.user_id then return new; end if;
+  select name into who from public.profiles where id = new.user_id;
+  insert into public.notifications (user_id, kind, title, body, link)
+  values (target, 'comment_reply', 'New reply to your comment',
+          coalesce(who, 'Someone') || ': ' || left(new.body, 80), '#dashboard');
+  return new;
+end $$;
+drop trigger if exists post_comments_reply_notify on public.post_comments;
+create trigger post_comments_reply_notify after insert on public.post_comments
+  for each row execute function public.notify_comment_reply();
+
+-- Reactions on comments (one per person per comment)
+create table if not exists public.comment_reactions (
+  comment_id uuid not null references public.post_comments(id) on delete cascade,
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  kind       text not null check (kind in ('like','love','haha','wow','sad','fire')),
+  created_at timestamptz not null default now(),
+  primary key (comment_id, user_id)
+);
+alter table public.comment_reactions enable row level security;
+drop policy if exists "creact read" on public.comment_reactions;
+create policy "creact read" on public.comment_reactions for select to authenticated using (true);
+drop policy if exists "creact insert own" on public.comment_reactions;
+create policy "creact insert own" on public.comment_reactions for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists "creact update own" on public.comment_reactions;
+create policy "creact update own" on public.comment_reactions for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "creact delete own" on public.comment_reactions;
+create policy "creact delete own" on public.comment_reactions for delete to authenticated using (user_id = auth.uid());
+
+-- Reactions on 1-to-1 messages: only the two people in that chat can see / add them
+create table if not exists public.message_reactions (
+  message_id uuid not null references public.messages(id) on delete cascade,
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  kind       text not null check (kind in ('like','love','haha','wow','sad','fire')),
+  created_at timestamptz not null default now(),
+  primary key (message_id, user_id)
+);
+alter table public.message_reactions enable row level security;
+drop policy if exists "mreact read" on public.message_reactions;
+create policy "mreact read" on public.message_reactions for select to authenticated
+  using (exists (select 1 from public.messages m where m.id = message_id
+                 and (m.sender_id = auth.uid() or m.recipient_id = auth.uid())));
+drop policy if exists "mreact insert own" on public.message_reactions;
+create policy "mreact insert own" on public.message_reactions for insert to authenticated
+  with check (user_id = auth.uid() and exists (select 1 from public.messages m where m.id = message_id
+                 and (m.sender_id = auth.uid() or m.recipient_id = auth.uid())));
+drop policy if exists "mreact update own" on public.message_reactions;
+create policy "mreact update own" on public.message_reactions for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid());
+drop policy if exists "mreact delete own" on public.message_reactions;
+create policy "mreact delete own" on public.message_reactions for delete to authenticated using (user_id = auth.uid());
+
+-- Reactions on community chat messages: community members (and staff) only
+create table if not exists public.community_message_reactions (
+  message_id   uuid not null references public.community_messages(id) on delete cascade,
+  community_id uuid not null references public.communities(id) on delete cascade,
+  user_id      uuid not null references public.profiles(id) on delete cascade,
+  kind         text not null check (kind in ('like','love','haha','wow','sad','fire')),
+  created_at   timestamptz not null default now(),
+  primary key (message_id, user_id)
+);
+create index if not exists cmreact_community_idx on public.community_message_reactions (community_id);
+alter table public.community_message_reactions enable row level security;
+drop policy if exists "cmreact read" on public.community_message_reactions;
+create policy "cmreact read" on public.community_message_reactions for select to authenticated
+  using (public.is_community_member(community_id) or public.is_admin());
+drop policy if exists "cmreact insert own" on public.community_message_reactions;
+create policy "cmreact insert own" on public.community_message_reactions for insert to authenticated
+  with check (user_id = auth.uid() and public.is_community_member(community_id)
+              and exists (select 1 from public.community_messages m where m.id = message_id and m.community_id = community_message_reactions.community_id));
+drop policy if exists "cmreact update own" on public.community_message_reactions;
+create policy "cmreact update own" on public.community_message_reactions for update to authenticated
+  using (user_id = auth.uid()) with check (user_id = auth.uid() and public.is_community_member(community_id));
+drop policy if exists "cmreact delete own" on public.community_message_reactions;
+create policy "cmreact delete own" on public.community_message_reactions for delete to authenticated using (user_id = auth.uid());
+
+grant select, insert, update, delete on public.comment_reactions           to authenticated;
+grant select, insert, update, delete on public.message_reactions           to authenticated;
+grant select, insert, update, delete on public.community_message_reactions to authenticated;
+
+do $$ begin
+  begin alter publication supabase_realtime add table public.comment_reactions;           exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.message_reactions;           exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.community_message_reactions; exception when duplicate_object then null; end;
+end $$;
+
+
+-- =====================================================================
+-- 21) Community join codes  -- safe to re-run
+-- =====================================================================
+-- Every community gets a short unique code. Anyone who has the code can look the community up
+-- and join it from the dashboard (Join button). Only members/staff can SEE the code on the community page.
+alter table public.communities add column if not exists code text;
+
+create or replace function public.gen_community_code()
+returns text language plpgsql as $$
+declare c text; i int;
+begin
+  loop
+    c := '';
+    for i in 1..6 loop   -- no 0/O/1/I so codes are easy to read out loud
+      c := c || substr('ABCDEFGHJKLMNPQRSTUVWXYZ23456789', 1 + floor(random() * 32)::int, 1);
+    end loop;
+    exit when not exists (select 1 from public.communities where code = c);
+  end loop;
+  return c;
+end $$;
+
+update public.communities set code = public.gen_community_code() where code is null;
+alter table public.communities alter column code set default public.gen_community_code();
+alter table public.communities alter column code set not null;
+create unique index if not exists communities_code_key on public.communities (code);
+
+-- Look a community up by its code (works for non-members, shows only safe info)
+create or replace function public.lookup_community_code(c text)
+returns table (id uuid, name text, description text, members bigint, is_member boolean)
+language sql security definer set search_path = public stable as $$
+  select co.id, co.name, co.description,
+         (select count(*) from public.community_members m where m.community_id = co.id),
+         exists (select 1 from public.community_members m where m.community_id = co.id and m.user_id = auth.uid())
+  from public.communities co
+  where co.code = upper(trim(c)) and auth.uid() is not null;
+$$;
+
+-- Join with a code
+create or replace function public.join_community_by_code(c text)
+returns uuid language plpgsql security definer set search_path = public as $$
+declare cid uuid; cname text; owner uuid; who text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  select id, name, owner_id into cid, cname, owner from public.communities where code = upper(trim(c));
+  if cid is null then raise exception 'No community found with that code'; end if;
+  insert into public.community_members (community_id, user_id, added_by)
+  values (cid, auth.uid(), auth.uid()) on conflict do nothing;
+  if found and owner <> auth.uid() then
+    select name into who from public.profiles where id = auth.uid();
+    insert into public.notifications (user_id, kind, title, body, link)
+    values (owner, 'community_added', 'New member',
+            coalesce(who, 'Someone') || ' joined "' || cname || '" with the code.', '#community-' || cid);
+  end if;
+  return cid;
+end $$;
+
+-- Owner / staff can make a fresh code (the old one stops working)
+create or replace function public.regenerate_community_code(cid uuid)
+returns text language plpgsql security definer set search_path = public as $$
+declare n text;
+begin
+  if not (public.community_owner(cid) = auth.uid() or public.is_admin()) then raise exception 'Not allowed'; end if;
+  n := public.gen_community_code();
+  update public.communities set code = n where id = cid;
+  return n;
+end $$;
+
+revoke all on function public.lookup_community_code(text)     from public, anon;
+revoke all on function public.join_community_by_code(text)    from public, anon;
+revoke all on function public.regenerate_community_code(uuid) from public, anon;
+grant execute on function public.lookup_community_code(text)     to authenticated;
+grant execute on function public.join_community_by_code(text)    to authenticated;
+grant execute on function public.regenerate_community_code(uuid) to authenticated;

@@ -63,6 +63,71 @@ const Communities = (() => {
     }));
   }
 
+  /* ================= join with a code (dashboard Join button + Communities page) ================= */
+  function openJoin() {
+    if (document.getElementById("join-modal")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.id = "join-modal";
+    wrap.innerHTML = `
+      <div class="modal join-modal" role="dialog" aria-modal="true" aria-labelledby="jm-title">
+        <h3 id="jm-title">Join a community</h3>
+        <p>Enter the community code. Ask a member or the owner for it.</p>
+        <input id="jm-code" class="join-code-input" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="e.g. K7M2QX" />
+        <div class="join-result" id="jm-result"></div>
+        <div class="modal-actions"><button class="btn ghost" type="button" id="jm-close">Close</button></div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const input = wrap.querySelector("#jm-code"), out = wrap.querySelector("#jm-result");
+    const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector("#jm-close").addEventListener("click", close);
+    setTimeout(() => input.focus(), 30);
+
+    let seq = 0, timer;
+    const lookup = async () => {
+      const code = input.value.trim().toUpperCase();
+      const mine = ++seq;
+      if (code.length < 4) { out.innerHTML = ""; return; }
+      out.innerHTML = `<div class="empty">Searching…</div>`;
+      const { data, error } = await db().rpc("lookup_community_code", { c: code });
+      if (mine !== seq || !out.isConnected) return;
+      if (error) {
+        const missing = /could not find the function|schema cache/i.test(error.message);
+        out.innerHTML = `<div class="empty">${missing ? "Re-run supabase/schema.sql in Supabase to turn on join codes." : "Couldn't search: " + esc(error.message)}</div>`;
+        return;
+      }
+      const c = data && data[0];
+      if (!c) { out.innerHTML = `<div class="empty">No community found with that code.</div>`; return; }
+      const n = Number(c.members);
+      out.innerHTML = `
+        <div class="person-row join-found">
+          <div class="person-main" style="cursor:default">
+            <span class="community-icon" style="margin:0">${esc(c.name.trim()[0].toUpperCase())}</span>
+            <div><strong>${esc(c.name)}</strong><small>${n} member${n === 1 ? "" : "s"}${c.description ? " · " + esc(c.description) : ""}</small></div>
+          </div>
+          <div class="person-actions">${c.is_member
+            ? `<a class="btn-sm primary" href="#community-${esc(c.id)}" id="jm-open">Open</a>`
+            : `<button class="btn-sm primary" type="button" id="jm-join">Join</button>`}</div>
+        </div>`;
+      const open = out.querySelector("#jm-open");
+      if (open) open.addEventListener("click", close);
+      const join = out.querySelector("#jm-join");
+      if (join) join.addEventListener("click", async () => {
+        join.disabled = true;
+        const { data: cid, error: e2 } = await db().rpc("join_community_by_code", { c: code });
+        if (e2) { join.disabled = false; Utils.toast("Couldn't join: " + e2.message, 4500); return; }
+        Utils.toast("You joined " + c.name + ".");
+        close();
+        location.hash = "#community-" + cid;
+      });
+    };
+    input.addEventListener("input", () => { input.value = input.value.toUpperCase().replace(/[^A-Z0-9]/g, ""); clearTimeout(timer); timer = setTimeout(lookup, 250); });
+    input.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); const j = out.querySelector("#jm-join,#jm-open"); if (j) j.click(); else lookup(); } });
+  }
+
   /* ================= list page ================= */
   async function mount(el) {
     host = el;
@@ -121,7 +186,10 @@ const Communities = (() => {
     el.innerHTML = `
       <div class="page-head" style="margin-bottom:18px">
         <h1 class="view-title" style="margin:0">Communities</h1>
-        <button class="btn primary" id="new-community" type="button">Request a community</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn ghost" id="join-code-btn" type="button">Join with code</button>
+          <button class="btn primary" id="new-community" type="button">Request a community</button>
+        </div>
       </div>
 
       <form class="dev-card hidden" id="community-form" novalidate>
@@ -149,8 +217,16 @@ const Communities = (() => {
         </a>`).join("")}</div>`
         : `<div class="empty">You're not in any community yet. Request one above, or ask a friend to add you.</div>`}
 
-      ${mineHTML}`;
+      ${mineHTML}
 
+      <h2 class="section-title">All users <span class="count-chip" id="all-count">…</span></h2>
+      <p class="hint" style="margin-top:0">Everyone on ConfessHub. Open a profile to add them as a friend or send a message.</p>
+      <input class="text-input search-input" id="all-q" placeholder="Search all users…" maxlength="40" autocomplete="off" />
+      <div id="all-users"><div class="empty">Loading people…</div></div>`;
+
+    mountAllUsers(el);
+
+    el.querySelector("#join-code-btn").addEventListener("click", openJoin);
     const form = el.querySelector("#community-form");
     el.querySelector("#new-community").addEventListener("click", () => { form.classList.toggle("hidden"); el.querySelector("#cm-name").focus(); });
     el.querySelector("#cm-cancel").addEventListener("click", () => form.classList.add("hidden"));
@@ -177,19 +253,48 @@ const Communities = (() => {
     }));
   }
 
+  /* ================= all users directory (every account is visible) ================= */
+  function mountAllUsers(el) {
+    const box = el.querySelector("#all-users");
+    const count = el.querySelector("#all-count");
+    const q = el.querySelector("#all-q");
+    let timer, seq = 0;
+    const search = async () => {
+      const mine = ++seq;
+      const term = q.value.trim();
+      let query = db().from("public_profiles").select("id,name,avatar,bio,role,created_at").limit(200);
+      query = term ? query.ilike("name", `%${term}%`).order("name") : query.order("name");
+      const { data, error } = await query;
+      if (mine !== seq || !box.isConnected) return;
+      if (error) { box.innerHTML = `<div class="empty">Couldn't load users: ${esc(error.message)}</div>`; return; }
+      count.textContent = data.length;
+      box.innerHTML = data.length ? data.map((p) => `
+        <div class="person-row">
+          <a href="${p.id === me.id ? "#profile" : "#user-" + esc(p.id)}" class="person-main">
+            ${Utils.avatar(p.name, p.avatar)}
+            <div><strong>${Utils.nameWithBadge(p.name, p.id === me.id ? me.role : p.role)}${p.id === me.id ? ' <span class="dim">(you)</span>' : ""}</strong><small>${p.bio ? esc(p.bio) : "No bio yet"}</small></div>
+          </a>
+        </div>`).join("") : `<div class="empty">No one found with that name.</div>`;
+    };
+    q.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(search, 250); });
+    search();
+  }
+
   /* ================= community chat ================= */
   async function mountChat(box, cid, my) {
     let msgs = [];
+    let rxs = new Map();     // message id -> [{ message_id, user_id, kind }]
     const paint = (stick = true) => {
       if (!box.isConnected) return;
       const log = box.querySelector("#cchat-log");
       const atBottom = !log || log.scrollHeight - log.scrollTop - log.clientHeight < 80;
+      const prevTop = log ? log.scrollTop : 0;
+      const hadFocus = !!box.querySelector("#cchat-input") && document.activeElement === box.querySelector("#cchat-input");
       const html = msgs.length
         ? msgs.map((m) => {
             const mine = m.user_id === me.id;
             const p = Social.person(m.user_id);
-            const row = Messages.bubble(mine, mine ? null : p.name, m.body, m.created_at, p.role);
-            return row.replace('<div class="bubble-row', `<div data-mid="${esc(m.id)}" class="bubble-row`);
+            return Messages.bubble(mine, mine ? null : p.name, m.body, m.created_at, p.role, { id: m.id, rx: rxs.get(m.id) || [] });
           }).join("")
         : `<div class="empty">No messages yet. Start the conversation!</div>`;
       const draft = box.querySelector("#cchat-input") ? box.querySelector("#cchat-input").value : "";
@@ -200,10 +305,10 @@ const Communities = (() => {
           <button class="btn primary" type="submit">Send</button>
         </form>`;
       const l = box.querySelector("#cchat-log");
-      if (stick || atBottom) l.scrollTop = l.scrollHeight;
+      l.scrollTop = (stick || atBottom) ? l.scrollHeight : prevTop;
       const input = box.querySelector("#cchat-input");
       input.value = draft;
-      if (draft) input.focus();
+      if (draft && (stick || hadFocus)) input.focus();
       box.querySelector("#cchat-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const text = input.value.trim();
@@ -223,16 +328,36 @@ const Communities = (() => {
       if (my !== token || !box.isConnected) return;
       if (error) { box.innerHTML = `<div class="empty">Chat unavailable: ${esc(error.message)}</div>`; return; }
       msgs = data.slice().reverse();
+      const rr = await db().from("community_message_reactions").select("message_id,user_id,kind").eq("community_id", cid).limit(5000);
+      rxs = new Map();
+      if (!rr.error) rr.data.forEach((x) => { if (!rxs.has(x.message_id)) rxs.set(x.message_id, []); rxs.get(x.message_id).push(x); });
       await Social.fetchProfiles([...new Set(msgs.map((m) => m.user_id))]);
       if (my !== token || !box.isConnected) return;
       paint(false);
     };
+
+    // react to a community message (optimistic; rolls back on error)
+    box.addEventListener("click", async (e) => {
+      const row = e.target.closest(".bubble-row[data-mid]");
+      if (!row) return;
+      const mid = row.dataset.mid, before = rxs.get(mid) || [];
+      const kind = Reactions.intent(e.target, before, me.id);
+      if (kind === undefined) return;
+      rxs.set(mid, Reactions.apply(before, me.id, "message_id", mid, kind));
+      paint(false);
+      const { error } = await Reactions.save("community_message_reactions", "message_id", mid, me.id, kind, { community_id: cid });
+      if (error) {
+        rxs.set(mid, before); paint(false);
+        Utils.toast(/schema cache|relation/i.test(error.message) ? "Re-run supabase/schema.sql to turn on message reactions." : "Couldn't react: " + error.message);
+      }
+    });
 
     await fetchAll();
     if (my !== token) return;
     paint(true);
     chatChannel = db().channel("community-chat-" + cid)
       .on("postgres_changes", { event: "*", schema: "public", table: "community_messages", filter: `community_id=eq.${cid}` }, fetchAll)
+      .on("postgres_changes", { event: "*", schema: "public", table: "community_message_reactions", filter: `community_id=eq.${cid}` }, fetchAll)
       .subscribe();
   }
 
@@ -251,11 +376,12 @@ const Communities = (() => {
       const { data, error } = await query;
       if (mine !== seq || !results.isConnected) return;
       if (error) { results.innerHTML = `<div class="empty">Couldn't load people: ${esc(error.message)}</div>`; return; }
-      const list = data.filter((p) => !memberIds.has(p.id));
-      count.textContent = list.length;
-      results.innerHTML = list.length
-        ? list.map((p) => personRow(p, `<button class="btn-sm primary" data-add="${esc(p.id)}">Add</button>`)).join("")
-        : `<div class="empty">${term ? "No one found with that name." : "Everyone is already in this community."}</div>`;
+      count.textContent = data.length;
+      results.innerHTML = data.length
+        ? data.map((p) => personRow(p, memberIds.has(p.id)
+            ? `<span class="status-pill ok">Member</span>`
+            : `<button class="btn-sm primary" data-add="${esc(p.id)}">Add</button>`)).join("")
+        : `<div class="empty">No one found with that name.</div>`;
       results.querySelectorAll("[data-add]").forEach((b) => b.addEventListener("click", async () => {
         b.disabled = true;
         const { error: e2 } = await db().rpc("add_community_member", { cid, target: b.dataset.add });
@@ -320,6 +446,16 @@ const Communities = (() => {
         </div>
       </div>
 
+      ${(isMember || Auth.isStaff(me)) && com.code ? `
+      <div class="code-card">
+        <div><small>Community code</small><strong class="code-value" id="com-code">${esc(com.code)}</strong>
+          <small class="dim">Share it: anyone can join from Dashboard → Join.</small></div>
+        <div class="code-actions">
+          <button class="btn-sm primary" type="button" id="copy-code">Copy</button>
+          ${canManage ? `<button class="btn-sm ghost" type="button" id="new-code">New code</button>` : ""}
+        </div>
+      </div>` : ""}
+
       ${isMember ? `
       <h2 class="section-title">Chat</h2>
       <div class="dev-card com-chat" id="com-chat"></div>
@@ -343,6 +479,19 @@ const Communities = (() => {
       mountChat(el.querySelector("#com-chat"), id, my);
       mountAddList(el, id, memberIds, () => drawDetail(el, id, my), personRow);
     }
+    const cc = el.querySelector("#copy-code");
+    if (cc) cc.addEventListener("click", async () => {
+      try { await navigator.clipboard.writeText(com.code); Utils.toast("Code copied: " + com.code); }
+      catch { Utils.toast("Your code is " + com.code); }
+    });
+    const nc = el.querySelector("#new-code");
+    if (nc) nc.addEventListener("click", async () => {
+      if (!confirm("Make a new code? The old code will stop working.")) return;
+      const { error } = await db().rpc("regenerate_community_code", { cid: id });
+      if (error) return Utils.toast("Couldn't change the code: " + error.message);
+      Utils.toast("New code created.");
+      drawDetail(el, id, my);
+    });
     el.querySelectorAll("[data-remove]").forEach((b) => b.addEventListener("click", async () => {
       if (!confirm(`Remove ${b.dataset.name} from this community?`)) return;
       const { error } = await db().from("community_members").delete().eq("community_id", id).eq("user_id", b.dataset.remove);
@@ -368,5 +517,5 @@ const Communities = (() => {
     });
   }
 
-  return { init, mount, mountDetail, reviewRow, bindReview };
+  return { init, mount, mountDetail, reviewRow, bindReview, openJoin };
 })();
