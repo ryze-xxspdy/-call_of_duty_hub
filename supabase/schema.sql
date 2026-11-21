@@ -931,6 +931,31 @@ create table if not exists public.attachments (
   code       text check (code is null or char_length(code) <= 50000),
   created_at timestamptz not null default now()
 );
+
+-- If these tables already exist from an older version, "create table if not exists" skips them,
+-- so add any missing columns / checks here (otherwise the indexes and policies below fail with
+-- 'column "folder_id" / "kind" does not exist').
+alter table public.attachment_folders add column if not exists owner_id   uuid references public.profiles(id) on delete cascade default auth.uid();
+alter table public.attachment_folders add column if not exists name       text not null default 'Folder';
+alter table public.attachment_folders add column if not exists created_at timestamptz not null default now();
+alter table public.attachment_folders alter column owner_id set default auth.uid();
+
+alter table public.attachments add column if not exists owner_id   uuid references public.profiles(id) on delete cascade default auth.uid();
+alter table public.attachments add column if not exists folder_id  uuid references public.attachment_folders(id) on delete set null;
+alter table public.attachments add column if not exists kind       text not null default 'photo';
+alter table public.attachments add column if not exists title      text;
+alter table public.attachments add column if not exists media_url  text;
+alter table public.attachments add column if not exists code       text;
+alter table public.attachments add column if not exists created_at timestamptz not null default now();
+alter table public.attachments alter column owner_id set default auth.uid();
+alter table public.attachments alter column kind drop default;
+
+alter table public.attachments drop constraint if exists attachments_kind_check;
+alter table public.attachments add constraint attachments_kind_check check (kind in ('photo','code')) not valid;
+alter table public.attachments drop constraint if exists attachments_media_url_check;
+alter table public.attachments add constraint attachments_media_url_check
+  check (media_url is null or media_url ~ '^https://') not valid;
+
 create index if not exists attachments_owner_idx on public.attachments (owner_id, created_at desc);
 create index if not exists attachments_folder_idx on public.attachments (folder_id);
 
@@ -963,7 +988,10 @@ grant select, insert, update, delete on public.attachments        to authenticat
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values ('attachments', 'attachments', true, 10485760,
         array['image/jpeg','image/png','image/gif','image/webp'])
-on conflict (id) do nothing;
+on conflict (id) do update
+  set public = excluded.public,
+      file_size_limit = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;   -- fixes a bucket made earlier as private (photos wouldn't load)
 
 drop policy if exists "attachments read" on storage.objects;
 create policy "attachments read" on storage.objects for select using (bucket_id = 'attachments');
