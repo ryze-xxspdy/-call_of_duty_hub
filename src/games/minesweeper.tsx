@@ -7,6 +7,7 @@ const MinesweeperGame: GameModule = {
   emoji: "💣",
   blurb: "Clear the board without hitting a mine. Fastest time wins.",
   scoreLabel: "seconds",
+  pointsHint: "300+ pts for a clear",
   lowerIsBetter: true,
 
   mount(root, api) {
@@ -70,6 +71,7 @@ const MinesweeperGame: GameModule = {
       if (!placed) placeMines(i);
       if (c.mine) {
         over = true; window.clearInterval(ticker);
+        api.award(cells.filter((x) => x.open).length * 2);   // a little for the cells you cleared
         cells.forEach((x) => { if (x.mine) x.open = true; });
         msgEl.textContent = "Boom! You hit a mine. Press Restart.";
       } else {
@@ -77,6 +79,7 @@ const MinesweeperGame: GameModule = {
         if (cells.every((x) => x.mine || x.open)) {
           over = true; window.clearInterval(ticker);
           const best = api.report(seconds);
+          api.award(300 + Math.max(0, 200 - seconds));
           msgEl.textContent = `Cleared in ${seconds}s!` + (best ? " New best! 🎉" : "");
         }
       }

@@ -152,3 +152,27 @@ before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
   reason, when the ban ends, and a box to **message the developer**. That message arrives in the developer's Messages, in the bell, and in
   **Developer panel → Ban appeals** (Unban / Dismiss). Anyone who opens a banned person's profile sees **"This user has been banned"** and can't message or add them.
   **Re-run `supabase/schema.sql`** (section 24) to add `profiles.ban_until`, `ban_appeals` and the new ban functions.
+
+- **Games, points & levels**: the Games hub now has 13 games (Tic-Tac-Toe, Snake, Memory Match, 2048, Minesweeper, Math Sprint,
+  plus Whack-a-Mole, Reaction Test, Simon Says, Word Scramble, Connect Four, Typing Sprint, Quick Quiz).
+  Every finished round awards **points** and **XP** (each game card shows how many). XP raises your **level** (bonus points on every level-up);
+  points are your spendable balance. The top bar shows your level and points.
+- **Redeem** (sidebar): spend points on **CODM codes** and **MLBB top-ups** (the old badge / colour-theme rewards are gone).
+  - **CODM**: redeeming gives the student a code straight away. It is shown in a pop-up and kept under **My redemptions** so it can be found again.
+  - **MLBB**: the student enters **Game ID, Server and IGN**. Every admin / the developer gets a notification (pop-up + bell) with those details,
+    sends the item in the game and taps **Mark delivered**, which notifies the student.
+  - **No stock = gray**: a reward with stock 0 turns gray and can't be redeemed until an admin adds more.
+  Points, level and XP are saved per account in this browser's localStorage, like personal bests. To add a game, create `src/games/<name>.tsx`,
+  call `api.award(points)` when a round ends, and add it to `REGISTRY` in `src/games/games.tsx` plus a `<script>` tag in `dashboard.html`.
+- **Admin / developer tools (Redeem + Games)**: admins and the developer are always **Level 100** (max). They see an admin bar to give themselves points
+  (Add / Set balance / quick +1,000, +10,000, +100,000) on the Games pages and on Redeem. On Redeem they also get an **Admin panel**:
+  - **Gift points**: search a person by name or email and send them points. Only **points** are gifted, never levels / XP. The person gets a
+    notification and the points land in their balance (instantly if the app is open, otherwise the next time they open it).
+  - **MLBB orders**: the orders waiting for you (Game ID, Server, IGN) with **Copy details** and **Mark delivered**.
+  - **Add a reward**: CODM (paste codes, one per line, the number of codes is the stock) or MLBB (type the stock), with emoji, name, description and cost.
+  - **Stock**: CODM = **+ Add codes**. MLBB = **+ Add stock** or **Set** (exact amount). Hide / Show, Delete.
+  The shop, codes, orders and gifts are stored in the database so everyone sees the same stock.
+  **You must re-run `supabase/schema.sql` once (section 25)**: it removes the old badge / theme shop and creates `shop_items`, `shop_codes`,
+  `shop_orders`, `point_gifts` and the `shop_*`, `gift_points` and `claim_gifts` functions. Until then the shop is empty and the admin tools are disabled.
+  Code: `src/rewards.ts` (points, shop loading, gifts, admin functions), `src/redeem.tsx` (the page + admin panel) and `src/games/games.tsx` (points bar).
+  Run `tsc -p .` (or `npm run build`) after editing `src/`.

@@ -1631,3 +1631,319 @@ grant select on public.public_profiles to authenticated;
 do $$ begin
   begin alter publication supabase_realtime add table public.ban_appeals; exception when duplicate_object then null; end;
 end $$;
+
+-- =====================================================================
+-- 25) Redeem shop: CODM codes + MLBB top-ups (items, codes, orders) and point gifts
+--     * CODM item  : the admin pastes codes. Stock = codes left. Redeeming hands the student one code.
+--     * MLBB item  : the student types their Game ID, Server and IGN. Every admin / the developer gets a
+--                    notification, delivers it by hand and taps "Mark delivered". Stock is a number the admin sets.
+--     * Stock 0    : the card turns gray and can't be redeemed until the admin adds more.
+--     * Gifts      : an admin / the developer can gift POINTS (never levels / XP) to any account.
+--     The old badge / theme shop is removed. Re-run this whole file after updating; it is safe to run again.
+-- =====================================================================
+drop function if exists public.shop_save_item(text, text, text, text, text, integer, text, integer, boolean);
+drop function if exists public.shop_buy(text);
+drop table if exists public.shop_purchases;
+
+create table if not exists public.shop_items (
+  id         text primary key,
+  kind       text not null,
+  emoji      text not null,
+  title      text not null,
+  blurb      text not null default '',
+  cost       integer not null check (cost > 0 and cost <= 1000000000),
+  stock      integer not null default 0 check (stock >= 0),
+  active     boolean not null default true,
+  created_by uuid references public.profiles(id) on delete set null,
+  created_at timestamptz not null default now()
+);
+
+-- Upgrade from the old badge / theme shop.
+delete from public.shop_items where kind not in ('codm','mlbb');
+alter table public.shop_items drop constraint if exists shop_items_kind_check;
+alter table public.shop_items add constraint shop_items_kind_check check (kind in ('codm','mlbb'));
+alter table public.shop_items drop column if exists accent;
+update public.shop_items set stock = 0 where stock is null;
+alter table public.shop_items alter column stock set default 0;
+alter table public.shop_items alter column stock set not null;
+
+-- The CODM codes (only admins can ever read this table; students get theirs through shop_buy()).
+create table if not exists public.shop_codes (
+  id         uuid primary key default gen_random_uuid(),
+  item_id    text not null references public.shop_items(id) on delete cascade,
+  code       text not null,
+  used_by    uuid references public.profiles(id) on delete set null,
+  used_at    timestamptz,
+  created_at timestamptz not null default now(),
+  unique (item_id, code)
+);
+create index if not exists shop_codes_free_idx on public.shop_codes (item_id) where used_by is null;
+
+-- Every redemption. For CODM the code is kept here so the student can find it again.
+create table if not exists public.shop_orders (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid references public.profiles(id) on delete set null,
+  user_name  text not null default '',
+  item_id    text,
+  item_title text not null,
+  kind       text not null,
+  cost       integer not null,
+  code       text,
+  game_id    text,
+  server     text,
+  ign        text,
+  status     text not null default 'pending' check (status in ('pending','done')),
+  created_at timestamptz not null default now(),
+  done_at    timestamptz
+);
+create index if not exists shop_orders_user_idx on public.shop_orders (user_id, created_at desc);
+create index if not exists shop_orders_status_idx on public.shop_orders (status, created_at desc);
+
+-- Points gifted by an admin. The receiving browser adds them to its balance once (see claim_gifts()).
+create table if not exists public.point_gifts (
+  id         uuid primary key default gen_random_uuid(),
+  to_user    uuid not null references public.profiles(id) on delete cascade,
+  from_user  uuid references public.profiles(id) on delete set null,
+  from_name  text not null default '',
+  amount     integer not null check (amount > 0 and amount <= 100000000),
+  claimed    boolean not null default false,
+  created_at timestamptz not null default now(),
+  claimed_at timestamptz
+);
+create index if not exists point_gifts_to_idx on public.point_gifts (to_user, claimed);
+
+alter table public.shop_items  enable row level security;
+alter table public.shop_codes  enable row level security;
+alter table public.shop_orders enable row level security;
+alter table public.point_gifts enable row level security;
+
+drop policy if exists shop_items_read on public.shop_items;
+create policy shop_items_read on public.shop_items for select to authenticated
+  using (active or public.is_admin());
+
+drop policy if exists shop_codes_read on public.shop_codes;
+create policy shop_codes_read on public.shop_codes for select to authenticated
+  using (public.is_admin());
+
+drop policy if exists shop_orders_read on public.shop_orders;
+create policy shop_orders_read on public.shop_orders for select to authenticated
+  using (user_id = auth.uid() or public.is_admin());
+
+drop policy if exists point_gifts_read on public.point_gifts;
+create policy point_gifts_read on public.point_gifts for select to authenticated
+  using (to_user = auth.uid() or from_user = auth.uid() or public.is_admin());
+
+revoke all on public.shop_items, public.shop_codes, public.shop_orders, public.point_gifts from anon, authenticated;
+grant select on public.shop_items, public.shop_codes, public.shop_orders, public.point_gifts to authenticated;
+
+do $$ begin
+  begin alter publication supabase_realtime add table public.point_gifts; exception when duplicate_object then null; end;
+end $$;
+
+-- Split pasted text into clean, unique codes (one per line).
+create or replace function public.shop_clean_codes(p_codes text)
+returns text[] language sql immutable as $$
+  select coalesce(array_agg(distinct c), '{}')
+  from (select trim(x) as c from unnest(string_to_array(replace(coalesce(p_codes, ''), E'\r', ''), E'\n')) as x) t
+  where c <> '' and char_length(c) <= 200;
+$$;
+
+-- Add a new reward. CODM: p_codes is the list of codes (stock = how many). MLBB: p_stock is the number in stock.
+create or replace function public.shop_add_item(
+  p_kind text, p_emoji text, p_title text, p_blurb text, p_cost integer, p_stock integer, p_codes text default null)
+returns text language plpgsql security definer set search_path = public as $$
+declare iid text; codes text[]; n integer := 0;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  if p_kind not in ('codm','mlbb') then raise exception 'Kind must be CODM or MLBB.'; end if;
+  if char_length(trim(coalesce(p_title, ''))) < 2 or char_length(p_title) > 40 then raise exception 'Give the reward a name (2-40 characters).'; end if;
+  if char_length(trim(coalesce(p_emoji, ''))) < 1 or char_length(p_emoji) > 8 then raise exception 'Pick an emoji for the reward.'; end if;
+  if p_cost is null or p_cost < 1 or p_cost > 1000000000 then raise exception 'Cost must be between 1 and 1,000,000,000 points.'; end if;
+
+  iid := 'item-' || substr(md5(random()::text || clock_timestamp()::text), 1, 8);
+  if p_kind = 'codm' then
+    codes := public.shop_clean_codes(p_codes);
+    if coalesce(array_length(codes, 1), 0) > 1000 then raise exception 'Add up to 1,000 codes at a time.'; end if;
+    n := coalesce(array_length(codes, 1), 0);
+  else
+    n := coalesce(p_stock, 0);
+    if n < 0 or n > 1000000 then raise exception 'Stock must be between 0 and 1,000,000.'; end if;
+  end if;
+
+  insert into public.shop_items (id, kind, emoji, title, blurb, cost, stock, created_by)
+    values (iid, p_kind, trim(p_emoji), trim(p_title), left(trim(coalesce(p_blurb, '')), 120), p_cost, n, auth.uid());
+  if p_kind = 'codm' and n > 0 then
+    insert into public.shop_codes (item_id, code) select iid, unnest(codes);
+  end if;
+  return iid;
+end $$;
+
+-- Add more CODM codes to an item. Returns the new stock.
+create or replace function public.shop_add_codes(p_id text, p_codes text)
+returns integer language plpgsql security definer set search_path = public as $$
+declare it public.shop_items%rowtype; codes text[]; added integer;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  select * into it from public.shop_items where id = p_id for update;
+  if not found then raise exception 'That item no longer exists.'; end if;
+  if it.kind <> 'codm' then raise exception 'Only CODM rewards use codes.'; end if;
+  codes := public.shop_clean_codes(p_codes);
+  if coalesce(array_length(codes, 1), 0) = 0 then raise exception 'Paste at least one code (one per line).'; end if;
+  if array_length(codes, 1) > 1000 then raise exception 'Add up to 1,000 codes at a time.'; end if;
+  insert into public.shop_codes (item_id, code) select p_id, unnest(codes) on conflict (item_id, code) do nothing;
+  get diagnostics added = row_count;
+  update public.shop_items set stock = stock + added where id = p_id returning stock into it.stock;
+  return it.stock;
+end $$;
+
+-- MLBB only: set the exact stock / add to it. (CODM stock is always the number of unused codes.)
+create or replace function public.shop_set_stock(p_id text, p_stock integer)
+returns integer language plpgsql security definer set search_path = public as $$
+declare k text;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  if p_stock is null or p_stock < 0 or p_stock > 1000000 then raise exception 'Stock must be between 0 and 1,000,000.'; end if;
+  select kind into k from public.shop_items where id = p_id;
+  if not found then raise exception 'That item no longer exists.'; end if;
+  if k <> 'mlbb' then raise exception 'CODM stock follows the codes you add.'; end if;
+  update public.shop_items set stock = p_stock where id = p_id;
+  return p_stock;
+end $$;
+
+create or replace function public.shop_add_stock(p_id text, p_amount integer)
+returns integer language plpgsql security definer set search_path = public as $$
+declare k text; s integer;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  if p_amount is null or p_amount < 1 or p_amount > 1000000 then raise exception 'Add between 1 and 1,000,000.'; end if;
+  select kind into k from public.shop_items where id = p_id;
+  if not found then raise exception 'That item no longer exists.'; end if;
+  if k <> 'mlbb' then raise exception 'For CODM, add codes instead.'; end if;
+  update public.shop_items set stock = least(1000000, stock + p_amount) where id = p_id returning stock into s;
+  return s;
+end $$;
+
+create or replace function public.shop_set_active(p_id text, p_active boolean)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  update public.shop_items set active = coalesce(p_active, true) where id = p_id;
+end $$;
+
+create or replace function public.shop_delete_item(p_id text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  delete from public.shop_items where id = p_id;
+end $$;
+
+-- Redeem one item. Returns {stock, code, order_id}. The points themselves are kept in the browser.
+--   CODM: hands out the next unused code.
+--   MLBB: needs p_game_id (digits), p_server (digits) and p_ign; every admin / the developer gets a notification.
+create or replace function public.shop_buy(p_item text, p_game_id text default null, p_server text default null, p_ign text default null)
+returns jsonb language plpgsql security definer set search_path = public as $$
+declare
+  it public.shop_items%rowtype; cid uuid; ccode text; oid uuid; uname text;
+  gid text := nullif(trim(coalesce(p_game_id, '')), '');
+  srv text := nullif(trim(coalesce(p_server, '')), '');
+  ign text := nullif(trim(coalesce(p_ign, '')), '');
+begin
+  if auth.uid() is null then raise exception 'Please sign in.'; end if;
+  select * into it from public.shop_items where id = p_item for update;
+  if not found or not it.active then raise exception 'That reward is not available.'; end if;
+  if it.stock <= 0 then raise exception 'Sorry, this reward is out of stock.'; end if;
+  select coalesce(nullif(name, ''), nullif(email, ''), 'A student') into uname from public.profiles where id = auth.uid();
+
+  if it.kind = 'codm' then
+    select id, code into cid, ccode from public.shop_codes
+      where item_id = it.id and used_by is null order by created_at, id limit 1 for update skip locked;
+    if cid is null then raise exception 'Sorry, this reward is out of stock.'; end if;
+    update public.shop_codes set used_by = auth.uid(), used_at = now() where id = cid;
+  else
+    if gid is null or gid !~ '^[0-9]{4,15}$' then raise exception 'Enter your MLBB Game ID (numbers only).'; end if;
+    if srv is null or srv !~ '^[0-9]{1,6}$' then raise exception 'Enter your MLBB Server (numbers only).'; end if;
+    if ign is null or char_length(ign) < 2 or char_length(ign) > 40 then raise exception 'Enter your in-game name (IGN).'; end if;
+  end if;
+
+  update public.shop_items set stock = stock - 1 where id = it.id;
+  insert into public.shop_orders (user_id, user_name, item_id, item_title, kind, cost, code, game_id, server, ign, status, done_at)
+    values (auth.uid(), uname, it.id, it.title, it.kind, it.cost, ccode, gid, srv, ign,
+            case when it.kind = 'codm' then 'done' else 'pending' end,
+            case when it.kind = 'codm' then now() end)
+    returning id into oid;
+
+  if it.kind = 'mlbb' then
+    insert into public.notifications (user_id, kind, title, body, link)
+    select p.id, 'shop_order', '💎 New MLBB order: ' || it.title,
+           left(uname || ' · ID ' || gid || ' (Server ' || srv || ') · IGN ' || ign, 300), '#redeem'
+    from public.profiles p where p.role in ('admin', 'developer');
+  end if;
+
+  return jsonb_build_object('stock', it.stock - 1, 'code', ccode, 'order_id', oid);
+end $$;
+
+-- Admin / developer: the MLBB top-up was sent. Tells the student.
+create or replace function public.shop_order_done(p_id uuid)
+returns void language plpgsql security definer set search_path = public as $$
+declare o public.shop_orders%rowtype;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  update public.shop_orders set status = 'done', done_at = now()
+    where id = p_id and status = 'pending' returning * into o;
+  if not found then raise exception 'That order is already delivered or no longer exists.'; end if;
+  if o.user_id is not null then
+    insert into public.notifications (user_id, kind, title, body, link)
+    values (o.user_id, 'shop_done', '✅ ' || o.item_title || ' delivered',
+            'Your MLBB reward was sent to ' || coalesce(o.ign, 'your account') || '. Enjoy!', '#redeem');
+  end if;
+end $$;
+
+-- Admin / developer: gift POINTS to someone. (Points only. Level and XP are never touched.)
+create or replace function public.gift_points(p_user uuid, p_amount integer)
+returns void language plpgsql security definer set search_path = public as $$
+declare who text;
+begin
+  if not public.is_admin() then raise exception 'Admin access required'; end if;
+  if p_amount is null or p_amount < 1 or p_amount > 100000000 then raise exception 'Gift between 1 and 100,000,000 points.'; end if;
+  if not exists (select 1 from public.profiles where id = p_user) then raise exception 'That person was not found.'; end if;
+  select coalesce(nullif(name, ''), 'An admin') into who from public.profiles where id = auth.uid();
+  insert into public.point_gifts (to_user, from_user, from_name, amount) values (p_user, auth.uid(), who, p_amount);
+  insert into public.notifications (user_id, kind, title, body, link)
+  values (p_user, 'points_gift', '🎁 You got ' || to_char(p_amount, 'FM999,999,999') || ' points!',
+          who || ' gifted you points. They are in your balance now. Spend them in Redeem.', '#redeem');
+end $$;
+
+-- The signed-in browser collects its unclaimed gifts (each gift is handed out exactly once).
+create or replace function public.claim_gifts()
+returns table (gift_amount integer, gift_from text) language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is null then return; end if;
+  return query
+    with c as (
+      update public.point_gifts g set claimed = true, claimed_at = now()
+      where g.to_user = auth.uid() and not g.claimed
+      returning g.amount as a, g.from_name as f)
+    select c.a, c.f from c;
+end $$;
+
+revoke all on function public.shop_clean_codes(text) from public;
+revoke all on function public.shop_add_item(text, text, text, text, integer, integer, text) from public;
+revoke all on function public.shop_add_codes(text, text)     from public;
+revoke all on function public.shop_set_stock(text, integer)  from public;
+revoke all on function public.shop_add_stock(text, integer)  from public;
+revoke all on function public.shop_set_active(text, boolean) from public;
+revoke all on function public.shop_delete_item(text)         from public;
+revoke all on function public.shop_buy(text, text, text, text) from public;
+revoke all on function public.shop_order_done(uuid)          from public;
+revoke all on function public.gift_points(uuid, integer)     from public;
+revoke all on function public.claim_gifts()                  from public;
+grant execute on function public.shop_add_item(text, text, text, text, integer, integer, text) to authenticated;
+grant execute on function public.shop_add_codes(text, text)     to authenticated;
+grant execute on function public.shop_set_stock(text, integer)  to authenticated;
+grant execute on function public.shop_add_stock(text, integer)  to authenticated;
+grant execute on function public.shop_set_active(text, boolean) to authenticated;
+grant execute on function public.shop_delete_item(text)         to authenticated;
+grant execute on function public.shop_buy(text, text, text, text) to authenticated;
+grant execute on function public.shop_order_done(uuid)          to authenticated;
+grant execute on function public.gift_points(uuid, integer)     to authenticated;
+grant execute on function public.claim_gifts()                  to authenticated;

@@ -9,6 +9,7 @@ const MemoryGame: GameModule = {
   emoji: "🧠",
   blurb: "Find all 8 pairs in as few moves as you can.",
   scoreLabel: "moves",
+  pointsHint: "Up to 300 pts, fewer moves = more",
   lowerIsBetter: true,
 
   mount(root, api) {
@@ -64,6 +65,7 @@ const MemoryGame: GameModule = {
     function win() {
       window.clearInterval(ticker);
       const best = api.report(moves);
+      api.award(Math.max(50, 400 - moves * 10));
       msgEl.textContent = `Done in ${moves} moves, ${fmtTime()}.` + (best ? " New best! 🎉" : "");
     }
 

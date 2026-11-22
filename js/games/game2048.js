@@ -6,6 +6,7 @@ const Game2048 = {
     emoji: "🔢",
     blurb: "Merge matching tiles and reach 2048.",
     scoreLabel: "points",
+    pointsHint: "1 pt per 5 score",
     mount(root, api) {
         const SIZE = 4;
         let grid = [];
@@ -75,6 +76,7 @@ const Game2048 = {
             if (!canMove()) {
                 over = true;
                 api.report(score);
+                api.award(score / 5);
             }
             paint();
         }

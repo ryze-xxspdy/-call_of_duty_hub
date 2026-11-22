@@ -7,6 +7,7 @@ const MathSprintGame = {
     emoji: "⏱️",
     blurb: "60 seconds of quick sums. How many can you get right?",
     scoreLabel: "correct",
+    pointsHint: "15 pts per right answer",
     mount(root, api) {
         const ROUND = 60;
         let timeLeft = ROUND, score = 0, streak = 0, answer = 0, timer = null, playing = false;
@@ -88,6 +89,7 @@ const MathSprintGame = {
             playing = false;
             input.disabled = true;
             const best = api.report(score);
+            api.award(score * 15);
             question.textContent = "Time's up!";
             status.textContent = `You got ${score} right.` + (best && score > 0 ? " New best! 🎉" : "");
         }

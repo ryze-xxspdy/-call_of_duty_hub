@@ -47,6 +47,7 @@ const TicTacToeGame: GameModule = {
   emoji: "❌",
   blurb: "Beat the computer. Hard mode never loses a game it can win.",
   scoreLabel: "wins",
+  pointsHint: "Win 100 (hard 200), draw 20",
 
   mount(root, api) {
     let board: Cell[] = Array(9).fill(null);
@@ -63,9 +64,9 @@ const TicTacToeGame: GameModule = {
       const w = tttWinner(board);
       if (w) {
         over = true; winLine = w.line;
-        if (w.who === "X") { tally.win++; wins++; status = "You win! 🎉"; if (api.report(wins)) api.toast("New best: " + wins + " wins"); }
-        else { tally.lose++; status = "Computer wins"; }
-      } else if (board.every(Boolean)) { over = true; tally.draw++; status = "It's a draw"; }
+        if (w.who === "X") { tally.win++; wins++; api.award(level === "hard" ? 200 : 100); status = "You win! 🎉"; if (api.report(wins)) api.toast("New best: " + wins + " wins"); }
+        else { tally.lose++; status = "Computer wins"; api.award(10); }
+      } else if (board.every(Boolean)) { over = true; tally.draw++; status = "It's a draw"; api.award(level === "hard" ? 40 : 20); }
       return over;
     }
 

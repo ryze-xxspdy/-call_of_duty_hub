@@ -6,6 +6,7 @@ const SnakeGame = {
     emoji: "🐍",
     blurb: "Eat, grow, don't crash. It speeds up as you score.",
     scoreLabel: "points",
+    pointsHint: "30 pts per apple",
     mount(root, api) {
         const N = 18; // grid size
         const PX = 22; // pixels per cell
@@ -80,6 +81,7 @@ const SnakeGame = {
             running = false;
             dead = true;
             const best = api.report(score);
+            api.award(score * 3);
             msgEl.textContent = `Game over: ${score} points.` + (best && score > 0 ? " New best! 🎉" : "") + " Press Restart.";
             draw();
         }

@@ -5,6 +5,7 @@ const Game2048: GameModule = {
   emoji: "🔢",
   blurb: "Merge matching tiles and reach 2048.",
   scoreLabel: "points",
+  pointsHint: "1 pt per 5 score",
 
   mount(root, api) {
     const SIZE = 4;
@@ -58,7 +59,7 @@ const Game2048: GameModule = {
       grid = g; score += gained;
       addTile();
       if (!won && grid.some((r) => r.includes(2048))) { won = true; api.toast("You reached 2048! 🎉"); }
-      if (!canMove()) { over = true; api.report(score); }
+      if (!canMove()) { over = true; api.report(score); api.award(score / 5); }
       paint();
     }
 

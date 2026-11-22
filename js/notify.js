@@ -40,8 +40,9 @@ const Notify = (() => {
     }
     /* ----- pop-up for the important ones (becoming an admin, community approved) ----- */
     // New community requests (staff) pop up from communities.js with Approve / Reject, so they are not repeated here.
-    const POPUP_KINDS = new Set(["role", "community_approved", "post_comment", "comment_reply"]);
-    const POPUP_LABEL = { role: "Open", community_approved: "View community", post_comment: "View post", comment_reply: "View post" };
+    const POPUP_KINDS = new Set(["role", "community_approved", "post_comment", "comment_reply", "points_gift", "shop_order", "shop_done"]);
+    const POPUP_LABEL = { role: "Open", community_approved: "View community", post_comment: "View post", comment_reply: "View post", points_gift: "Open Redeem", shop_order: "Open orders", shop_done: "Open Redeem" };
+    const EMOJI_KINDS = { points_gift: "🎁", shop_order: "💎", shop_done: "✅" };
     const isCommentKind = (k) => k === "post_comment" || k === "comment_reply";
     const postIdOf = (n) => { const m = /^#post-(.+)$/.exec(n.link || ""); return m ? m[1] : null; };
     /** Pop-up that puts the post in focus together with the newest comments on it. Returns the card HTML, or null. */
@@ -103,7 +104,7 @@ const Notify = (() => {
         const isRole = n.kind === "role";
         return `
       <div class="modal notif-popup" role="dialog" aria-modal="true" aria-labelledby="np-title">
-        <div class="np-icon ${isRole ? "role" : "ok"}">${isRole
+        <div class="np-icon ${isRole ? "role" : "ok"}">${EMOJI_KINDS[n.kind] ? `<span style="font-size:30px;line-height:1">${EMOJI_KINDS[n.kind]}</span>` : isRole
             ? '<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>'
             : '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.2-5.4 6.5-5.4s5.9 1.8 6.5 5.4M16 4.8a3.2 3.2 0 010 6.4M18 14.8c2 .6 3.2 2.3 3.5 5.2"/></svg>'}</div>
         <h3 id="np-title">${esc(n.title)}</h3>

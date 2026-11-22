@@ -17,6 +17,9 @@
     watchBan();
     setupChrome();
     await Social.init(user, { onMeChange: paintMe });
+    Rewards.init(user);
+    Rewards.on(paintRewardChip);
+    paintRewardChip();
     Communities.init(user);
     Messages.on(updateBadges);
     Messages.init(user);
@@ -58,6 +61,7 @@
     const fresh = await Auth.currentUser();
     if (!fresh || fresh.role === user.role) return;
     Object.assign(user, fresh);   // same object Social / Feed / Communities hold
+    Rewards.setRole(user.role);   // admins / developer are max level and get the points, gift + shop admin tools
     applyRole();
     paintMe();
     route();
@@ -123,6 +127,12 @@
     $("#menu-email").textContent = user.email;
   }
 
+  /** Top-bar chip: level + points, links to the Redeem page. */
+  function paintRewardChip() {
+    const lv = Rewards.level();
+    $("#rw-chip").innerHTML = `<span>⭐</span><b>Lv ${lv.level}</b><i>${Rewards.get().points.toLocaleString()} pts</i>`;
+  }
+
   function renderFriendsNav() {
     const list = Social.friends();
     mountInto($("#classes-subnav"), list.length
@@ -130,7 +140,7 @@
       : <span className="subnav-item dim">No friends yet</span>);
   }
 
-  const NOTIF_ICON: Record<string, string> = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️", report: "🚩" };
+  const NOTIF_ICON: Record<string, string> = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️", report: "🚩", points_gift: "🎁", shop_order: "💎", shop_done: "✅" };
 
   function renderNotifications() {
     const reqs = Social.incoming().map(({ p }) => (
@@ -225,6 +235,7 @@
     const views = {
       dashboard: renderDashboard,
       games: () => Games.mount($("#view"), user, hash),
+      redeem: () => Redeem.mount($("#view")),
       announcements: renderAnnouncements,
       admin: () => Admin.mount($("#view"), user, hash === "admin-reports" ? "reports" : null),
       developer: () => Developer.mount($("#view"), user),

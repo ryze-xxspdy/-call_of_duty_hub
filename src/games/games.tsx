@@ -3,7 +3,8 @@
    Each game lives in its own file (src/games/<name>.tsx) and registers itself in the list below. */
 const Games = (() => {
   const REGISTRY: GameModule[] = [
-    TicTacToeGame, SnakeGame, MemoryGame, Game2048, MinesweeperGame, MathSprintGame
+    TicTacToeGame, SnakeGame, MemoryGame, Game2048, MinesweeperGame, MathSprintGame,
+    WhackGame, ReactionGame, SimonGame, ScrambleGame, Connect4Game, TypingGame, QuizGame
   ];
 
   let cleanup: (() => void) | null = null;
@@ -30,18 +31,36 @@ const Games = (() => {
     return v === null ? "No score yet" : `Best: ${v} ${g.scoreLabel}`;
   }
 
+  /** Level + points banner shown at the top of the games pages. */
+  function statusBar(): Node {
+    const lv = Rewards.level(), st = Rewards.get();
+    return (
+      <a className="rw-banner" href="#redeem" title="Open the Redeem shop">
+        <span className="rw-lv">⭐<b>Lv {lv.level}</b></span>
+        <span className="rw-mid">
+          <span className="rw-title">{lv.max ? `${lv.title} · Level ${lv.level}` : `${lv.title} · ${lv.into} / ${lv.need} XP`}</span>
+          <span className="rw-bar"><i style={{ width: lv.pct + "%" }}></i></span>
+        </span>
+        <span className="rw-pts"><b>{st.points.toLocaleString()}</b> pts<small>Redeem →</small></span>
+      </a>
+    );
+  }
+
   /* ----- picker ----- */
   function mountMenu(view: HTMLElement, user: { id: string }): void {
     stop();
     mountInto(view,
       <h1 className="view-title">Games</h1>,
-      <p className="games-intro">Take a break between classes. Your best scores are saved on this device.</p>,
+      <p className="games-intro">Every round earns points and XP. Spend points in Redeem, level up by playing. Your progress is saved on this device.</p>,
+      statusBar(),
+      <div ref={(el: HTMLElement) => { if (Rewards.isStaff()) mountInto(el, Redeem.giveBar(() => mountMenu(view, user))); }}></div>,
       <div className="games-grid">
         {REGISTRY.map((g) => (
           <a className="game-card" href={`#games-${g.id}`}>
             <span className="game-emoji" aria-hidden="true">{g.emoji}</span>
             <strong>{g.title}</strong>
             <span className="game-blurb">{g.blurb}</span>
+            <span className="game-pts">⭐ {g.pointsHint}</span>
             <span className="game-best">{fmtBest(g, readBest(user.id, g.id))}</span>
           </a>
         ))}
@@ -57,6 +76,9 @@ const Games = (() => {
 
     let bestEl: HTMLElement;
     let stage: HTMLElement;
+    let earnedEl: HTMLElement;
+    let barEl: HTMLElement;
+    const paintBar = () => mountInto(barEl, statusBar());
     const paintBest = () => { bestEl.textContent = fmtBest(game, readBest(user.id, game.id)); };
 
     mountInto(view,
@@ -65,9 +87,13 @@ const Games = (() => {
         <h1 className="view-title game-title">{game.emoji} {game.title}</h1>
         <span className="game-best-chip" ref={(el: HTMLElement) => (bestEl = el)}></span>
       </div>,
+      <div ref={(el: HTMLElement) => (barEl = el)}></div>,
+      <div ref={(el: HTMLElement) => { if (Rewards.isStaff()) mountInto(el, Redeem.giveBar(paintBar)); }}></div>,
+      <div className="rw-earned" role="status" ref={(el: HTMLElement) => (earnedEl = el)}>Finish a round to earn points: {game.pointsHint}.</div>,
       <div className="game-stage" ref={(el: HTMLElement) => (stage = el)}></div>
     );
     paintBest();
+    paintBar();
 
     const api: GameApi = {
       best: () => readBest(user.id, game.id),
@@ -77,6 +103,18 @@ const Games = (() => {
         const better = prev === null || (game.lowerIsBetter ? score < prev : score > prev);
         if (better) { writeBest(user.id, game.id, score); paintBest(); }
         return better;
+      },
+      award(points) {
+        const r = Rewards.award(game.id, game.title, points);
+        paintBar();
+        if (!r.pts) { earnedEl.textContent = "No points this round. Finish a round to earn some."; return; }
+        earnedEl.innerHTML = "";
+        earnedEl.append(`+${r.pts.toLocaleString()} points · +${r.xp} XP`);
+        earnedEl.classList.remove("pop"); void earnedEl.offsetWidth; earnedEl.classList.add("pop");
+        if (r.levelUp) {
+          earnedEl.append(` · 🎉 Level ${r.levelUp}! Bonus +${r.bonus.toLocaleString()} points`);
+          Utils.toast(`Level up! You are now level ${r.levelUp} (+${r.bonus.toLocaleString()} bonus points)`, 4000);
+        }
       },
       toast: (m) => Utils.toast(m, 2600)
     };
