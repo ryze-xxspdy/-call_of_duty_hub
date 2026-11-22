@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="css/base.css" />
   <link rel="stylesheet" href="css/dashboard.css" />
+  <link rel="stylesheet" href="css/games.css" />
   <script>
     // Apply saved theme before paint to avoid a flash
     try {
@@ -38,9 +39,9 @@
           <svg viewBox="0 0 24 24"><path d="M3 11l9-8 9 8v9a1 1 0 01-1 1h-5v-6H9v6H4a1 1 0 01-1-1z"/></svg>
           <span>Dashboard</span>
         </a>
-        <a href="#calendar" class="nav-item" data-view="calendar">
-          <svg viewBox="0 0 24 24"><rect x="3" y="5" width="18" height="16" rx="2"/><path d="M3 10h18M8 3v4M16 3v4"/></svg>
-          <span>Calendar</span>
+        <a href="#games" class="nav-item" data-view="games">
+          <svg viewBox="0 0 24 24"><rect x="2.5" y="7" width="19" height="11" rx="5"/><path d="M7 10.5v4M5 12.5h4"/><circle cx="15.5" cy="11.5" r=".9"/><circle cx="18" cy="13.5" r=".9"/></svg>
+          <span>Games</span>
         </a>
         <a href="#announcements" class="nav-item" data-view="announcements">
           <svg viewBox="0 0 24 24"><path d="M3 11v3a1 1 0 001 1h3l6 4V6L7 10H4a1 1 0 00-1 1zM16 8a5 5 0 010 8"/></svg>
@@ -182,6 +183,7 @@
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="js/config.js"></script>
   <script src="js/utils.js"></script>
+  <script src="js/jsx.js"></script>
   <script src="js/auth.js"></script>
   <script src="js/onboarding.js"></script>
   <script src="js/ban.js"></script>
@@ -197,6 +199,13 @@
   <script src="js/developer.js"></script>
   <script src="js/contact.js"></script>
   <script src="js/attachments.js"></script>
+  <script src="js/games/tictactoe.js"></script>
+  <script src="js/games/snake.js"></script>
+  <script src="js/games/memory.js"></script>
+  <script src="js/games/game2048.js"></script>
+  <script src="js/games/minesweeper.js"></script>
+  <script src="js/games/mathsprint.js"></script>
+  <script src="js/games/games.js"></script>
   <script src="js/dashboard.js"></script>
 </body>
 </html>

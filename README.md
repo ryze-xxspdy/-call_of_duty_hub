@@ -1,7 +1,7 @@
 # StudyHub / ConfessHub
 
 Login + dashboard with a posts feed (text, photo, video), an admin panel, and a Supabase database.
-Plain HTML, CSS and JavaScript, no build step.
+Plain HTML + CSS, with the app code written in TypeScript / TSX and compiled to `js/`. The compiled `js/` folder is included, so it runs with no build step.
 
 ## 1. Set up Supabase (5 minutes)
 1. Create a free project at https://supabase.com.
@@ -105,9 +105,32 @@ Open http://localhost:8000
   requests, and loses admin powers if it was an admin. The developer account can't be banned or reported.
   **Re-run `supabase/schema.sql`** (sections 22 and 23) to add the setup columns, the `reports` table and the ban functions.
 
+## Source code (TypeScript / TSX)
+All app code lives in `src/` (`.ts`, `.tsx`, and one plain `.js` game) and compiles to `js/`, which the HTML pages load.
+After editing anything in `src/`, rebuild:
+
+    npm install      # once (installs TypeScript)
+    npm run build    # tsc -p .  ->  writes js/
+    npm run watch    # rebuild on save
+
+- `.tsx` files use a tiny built-in JSX runtime (`src/jsx.ts`: `h`, `Fragment`, `raw`, `mountInto`), no React and no bundler.
+  JSX text is escaped automatically; use `raw(html)` only for trusted markup such as `Utils.avatar(...)`.
+- TSX files: `dashboard.tsx` (shell, notifications, announcements), `contact.tsx` and everything in `src/games/`.
+- Everything else is typed TypeScript (`.ts`). `src/games/mathsprint.js` is deliberately plain JavaScript.
+- Don't edit `js/` by hand; it is overwritten by the build.
+
+## Games (replaces the Calendar)
+The **Games** sidebar link opens a picker (`#games`); each game opens at `#games-<id>`. Personal bests are saved per account in the browser.
+Tic-Tac-Toe (vs computer, Easy / Hard), Snake, Memory Match, 2048, Minesweeper and Math Sprint.
+To add a game: create `src/games/<name>.tsx` exporting a `GameModule` (see `src/games/types.d.ts`), add its `<script>` to `dashboard.html`
+before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
+
 ## Files
     index.html / dashboard.html
-    js/config.js    Supabase URL + key (you fill this in)
+    src/            TypeScript / TSX sources (edit these)
+    js/             compiled output loaded by the pages (generated)
+    css/games.css   styles for the Games pages
+    js/config.js    Supabase URL + key (you fill this in; source is src/config.ts)
     js/auth.js      Supabase login, sign-up, session
     js/feed.js      posts feed + composer + uploads
     js/social.js    profiles, friends, requests, user search, active users
