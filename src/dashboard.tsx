@@ -23,6 +23,8 @@
     Communities.init(user);
     Messages.on(updateBadges);
     Messages.init(user);
+    GlobalChat.on(updateBadges);
+    GlobalChat.init(user);
     Notify.on(() => { renderNotifications(); updateBadges(); });
     Announce.on(() => {
       renderNotifications(); updateBadges();
@@ -214,6 +216,9 @@
     const br = $("#bn-req-badge");
     br.textContent = pending;
     br.classList.toggle("hidden", pending === 0);
+    const gb = $("#nav-gc-badge"), gn = GlobalChat.unreadCount;
+    gb.textContent = gn > 99 ? "99+" : gn;
+    gb.classList.toggle("hidden", gn === 0);
     const cb = $("#com-badge");
     const n = Notify.list().filter((x) => !x.read && x.kind === "community_request").length;
     cb.textContent = n;
@@ -241,6 +246,7 @@
       developer: () => Developer.mount($("#view"), user),
       contact: () => Contact.mount($("#view"), user),
       attachments: () => Attachments.mount($("#view"), user),
+      "global-chat": () => GlobalChat.mount($("#view"), user),
       messages: () => Messages.mount($("#view"), hash.startsWith("messages-") ? hash.replace("messages-", "") : null),
       communities: () => Communities.mount($("#view")),
       community: () => Communities.mountDetail($("#view"), hash.replace("community-", "")),

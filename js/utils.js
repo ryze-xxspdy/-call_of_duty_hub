@@ -1,15 +1,103 @@
 "use strict";
 /* ---------- Shared helpers ---------- */
 const Utils = (() => {
-    let toastTimer;
+    const MAX_NOTICES = 3;
+    const live = new Map();
+    function noticeStack() {
+        let box = document.getElementById("notice-stack");
+        if (!box) {
+            box = document.createElement("div");
+            box.id = "notice-stack";
+            box.className = "notice-stack";
+            box.setAttribute("aria-live", "polite");
+            document.body.appendChild(box);
+        }
+        return box;
+    }
+    function notice(o) {
+        const box = noticeStack();
+        const ms = Math.max(1200, o.ms ?? 6000);
+        if (o.key) {
+            for (const [el, close] of live)
+                if (el.dataset.key === o.key)
+                    close("replaced");
+        }
+        while (live.size >= MAX_NOTICES) {
+            const [, close] = live.entries().next().value;
+            close("replaced");
+        }
+        const el = document.createElement("div");
+        el.className = "notice" + (o.title ? "" : " slim") + (o.href ? " link" : "");
+        el.setAttribute("role", "status");
+        if (o.key)
+            el.dataset.key = o.key;
+        el.innerHTML =
+            (o.icon ? `<span class="notice-icon" aria-hidden="true">${escapeHTML(o.icon)}</span>` : "") +
+                `<div class="notice-text">${o.title ? `<strong>${escapeHTML(o.title)}</strong>` : ""}${o.body ? `<span>${escapeHTML(o.body)}</span>` : ""}</div>` +
+                (o.href && o.actionLabel ? `<span class="notice-go">${escapeHTML(o.actionLabel)}</span>` : "") +
+                `<button type="button" class="notice-x" aria-label="Dismiss">×</button>` +
+                `<i class="notice-bar" style="animation-duration:${ms}ms"></i>`;
+        let timer = 0, left = ms, started = 0, closed = false;
+        const close = (why) => {
+            if (closed)
+                return;
+            closed = true;
+            clearTimeout(timer);
+            live.delete(el);
+            el.classList.remove("in");
+            el.classList.add("out");
+            const gone = () => el.remove();
+            el.addEventListener("transitionend", gone, { once: true });
+            setTimeout(gone, 450);
+            if (o.onClose)
+                o.onClose(why);
+        };
+        live.set(el, close);
+        const run = () => { started = Date.now(); clearTimeout(timer); timer = setTimeout(() => close("auto"), left); el.classList.remove("paused"); };
+        const pause = () => { left = Math.max(1200, left - (Date.now() - started)); clearTimeout(timer); el.classList.add("paused"); };
+        el.addEventListener("mouseenter", pause);
+        el.addEventListener("mouseleave", run);
+        el.querySelector(".notice-x").addEventListener("click", (e) => { e.stopPropagation(); close("dismiss"); });
+        el.addEventListener("click", () => {
+            if (!o.href)
+                return;
+            close("open");
+            if (o.href.startsWith("#"))
+                location.hash = o.href;
+            else
+                location.href = o.href;
+        });
+        // swipe up to dismiss
+        let y0 = 0, dy = 0, drag = false;
+        el.addEventListener("pointerdown", (e) => { drag = true; y0 = e.clientY; dy = 0; pause(); });
+        el.addEventListener("pointermove", (e) => {
+            if (!drag)
+                return;
+            dy = Math.min(0, e.clientY - y0);
+            el.style.transform = `translateY(${dy}px)`;
+        });
+        const end = () => {
+            if (!drag)
+                return;
+            drag = false;
+            if (dy < -36)
+                close("dismiss");
+            else {
+                el.style.transform = "";
+                run();
+            }
+        };
+        el.addEventListener("pointerup", end);
+        el.addEventListener("pointercancel", end);
+        box.appendChild(el);
+        void el.offsetHeight; // let the browser see the start position, then slide in
+        requestAnimationFrame(() => el.classList.add("in"));
+        run();
+        return { close: () => close("dismiss") };
+    }
+    /** Quick one-line message (saved, copied, errors). Slides down like every other notice. */
     function toast(message, ms = 2600) {
-        const el = document.getElementById("toast");
-        if (!el)
-            return;
-        el.textContent = message;
-        el.classList.add("show");
-        clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => el.classList.remove("show"), ms);
+        notice({ body: String(message), ms: Math.max(ms, 2200) });
     }
     function escapeHTML(str = "") {
         return String(str).replace(/[&<>"']/g, (c) => ({
@@ -75,5 +163,5 @@ const Utils = (() => {
     function nameWithBadge(name, role) {
         return `${escapeHTML(name)}${roleBadge(role)}`;
     }
-    return { initials, avatar, banner, roleBadge, nameWithBadge, toast, escapeHTML, loadJSON, startOfDay, daysBetween, formatTime, formatShortDate, formatLongDate, greeting };
+    return { initials, avatar, banner, roleBadge, nameWithBadge, toast, notice, escapeHTML, loadJSON, startOfDay, daysBetween, formatTime, formatShortDate, formatLongDate, greeting };
 })();

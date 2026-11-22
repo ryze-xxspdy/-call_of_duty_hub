@@ -1151,9 +1151,8 @@ h1, h2, h3, .greeting, .view-title, .brand-name, .stat b, .hero h2 { font-family
     border-radius: 999px; background: #e5384c; color: #fff; font-style: normal; font-size: 10px; font-weight: 700; line-height: 17px; text-align: center;
   }
   .bn-badge.hidden { display: none; }
-  /* keep content and toasts clear of the bar */
+  /* keep content clear of the bar */
   .content, .content[data-page] { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
-  .toast { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
   /* the slide-out menu sits above the bar */
   .sidebar { z-index: 60; }
 }
@@ -1316,3 +1315,35 @@ body.setup-open { overflow: hidden; }
 .ban-banner { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; background: rgba(229,72,77,.12); border: 1px solid rgba(229,72,77,.4); color: #ff8a8d; font-size: 13.5px; font-weight: 600; }
 .ban-banner svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
 .profile-card.is-banned .profile-info { opacity: .7; }
+
+/* ---------- Global chat ---------- */
+.gchat { position: relative; height: calc(100dvh - var(--tb-h) - 130px); min-height: 380px; }
+.gc-head { gap: 12px; }
+.gc-head strong { display: block; font-size: 14.5px; }
+.gc-head small { color: var(--muted); font-size: 11.5px; }
+.gc-globe { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 50%; background: color-mix(in srgb, var(--accent) 18%, var(--field)); font-size: 20px; }
+.gc-log { gap: 2px; }
+.gc-day { display: flex; justify-content: center; margin: 12px 0 8px; }
+.gc-day span { padding: 3px 12px; border-radius: 999px; background: var(--field); color: var(--muted); font-size: 11px; font-weight: 600; }
+.gc-more { align-self: center; margin-bottom: 8px; }
+.gc-msg { display: flex; align-items: flex-end; gap: 8px; margin-top: 8px; }
+.gc-msg.grouped { margin-top: 0; }
+.gc-msg.mine { justify-content: flex-end; }
+.gc-av { flex: none; width: 32px; align-self: flex-end; }
+.gc-col { display: flex; flex-direction: column; min-width: 0; max-width: min(78%, 520px); }
+.gc-msg.mine .gc-col { align-items: flex-end; }
+.gc-meta { display: flex; align-items: center; gap: 8px; margin: 0 4px 2px; font-size: 11.5px; }
+.gc-meta a { color: var(--text); text-decoration: none; }
+.gc-meta strong { display: inline-flex; align-items: center; gap: 4px; }
+.gc-meta small { color: var(--muted); font-size: 10.5px; }
+.gc-line { display: flex; align-items: center; gap: 4px; }
+.gc-msg.mine .gc-line { flex-direction: row-reverse; }
+.gc-bubble { padding: 8px 13px; border-radius: 16px 16px 16px 4px; background: var(--field); }
+.gc-msg.mine .gc-bubble { border-radius: 16px 16px 4px 16px; background: var(--accent); color: var(--on-accent, #fff); }
+.gc-bubble p { margin: 0; font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; white-space: pre-wrap; }
+.gc-del { flex: none; width: 26px; height: 26px; border: 0; border-radius: 50%; background: transparent; font-size: 13px; opacity: 0; cursor: pointer; }
+.gc-msg:hover .gc-del, .gc-del:focus-visible { opacity: .75; }
+.gc-del:hover { background: rgba(229, 72, 77, .18); opacity: 1; }
+@media (hover: none) { .gc-del { opacity: .35; } }
+.gc-new { position: absolute; left: 50%; bottom: 72px; transform: translateX(-50%); z-index: 2; padding: 7px 16px; border: 0; border-radius: 999px; background: var(--accent); color: var(--on-accent, #fff); font-size: 12.5px; font-weight: 700; box-shadow: 0 6px 18px rgba(0, 0, 0, .3); cursor: pointer; }
+@media (max-width: 1099px) { .gchat { height: calc(100dvh - var(--tb-h) - 130px - 56px); } }

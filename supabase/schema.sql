@@ -1639,6 +1639,9 @@ end $$;
 --                    notification, delivers it by hand and taps "Mark delivered". Stock is a number the admin sets.
 --     * Stock 0    : the card turns gray and can't be redeemed until the admin adds more.
 --     * Gifts      : an admin / the developer can gift POINTS (never levels / XP) to any account.
+--     * Done orders: when an MLBB order is delivered, its notification disappears for every other admin / the developer.
+--                    (CODM orders are done the moment they are bought, so admins are never notified about them.)
+--     * Recent activity: a PUBLIC feed (shop_activity) of redemptions, deliveries and gifts. It never holds codes, game IDs or emails.
 --     The old badge / theme shop is removed. Re-run this whole file after updating; it is safe to run again.
 -- =====================================================================
 drop function if exists public.shop_save_item(text, text, text, text, text, integer, text, integer, boolean);
@@ -1712,6 +1715,31 @@ create table if not exists public.point_gifts (
 );
 create index if not exists point_gifts_to_idx on public.point_gifts (to_user, claimed);
 
+-- A notification can point at the order it is about, so it can be removed once that order is done.
+alter table public.notifications add column if not exists ref_id uuid;
+create index if not exists notifications_ref_idx on public.notifications (ref_id) where ref_id is not null;
+-- Old order notifications (made before ref_id existed) can't be matched to an order: clear them once.
+delete from public.notifications where kind = 'shop_order' and ref_id is null;
+
+-- Public "recent activity" on the Redeem page. Written only by the shop functions below; everyone signed in can read it.
+create table if not exists public.shop_activity (
+  id          uuid primary key default gen_random_uuid(),
+  kind        text not null check (kind in ('redeem', 'delivered', 'gift')),
+  actor_id    uuid references public.profiles(id) on delete set null,   -- who redeemed / who was gifted / whose order was delivered
+  actor_name  text not null default '',
+  by_name     text not null default '',                                  -- gifts: who sent them
+  item_emoji  text not null default '',
+  item_title  text not null default '',
+  amount      integer,
+  created_at  timestamptz not null default now()
+);
+create index if not exists shop_activity_idx on public.shop_activity (created_at desc);
+alter table public.shop_activity enable row level security;
+drop policy if exists shop_activity_read on public.shop_activity;
+create policy shop_activity_read on public.shop_activity for select to authenticated using (true);
+revoke all on public.shop_activity from anon, authenticated;
+grant select on public.shop_activity to authenticated;
+
 alter table public.shop_items  enable row level security;
 alter table public.shop_codes  enable row level security;
 alter table public.shop_orders enable row level security;
@@ -1738,6 +1766,8 @@ grant select on public.shop_items, public.shop_codes, public.shop_orders, public
 
 do $$ begin
   begin alter publication supabase_realtime add table public.point_gifts; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.shop_orders; exception when duplicate_object then null; end;
+  begin alter publication supabase_realtime add table public.shop_activity; exception when duplicate_object then null; end;
 end $$;
 
 -- Split pasted text into clean, unique codes (one per line).
@@ -1843,7 +1873,7 @@ end $$;
 create or replace function public.shop_buy(p_item text, p_game_id text default null, p_server text default null, p_ign text default null)
 returns jsonb language plpgsql security definer set search_path = public as $$
 declare
-  it public.shop_items%rowtype; cid uuid; ccode text; oid uuid; uname text;
+  it public.shop_items%rowtype; cid uuid; ccode text; oid uuid; uname text; pname text;
   gid text := nullif(trim(coalesce(p_game_id, '')), '');
   srv text := nullif(trim(coalesce(p_server, '')), '');
   ign text := nullif(trim(coalesce(p_ign, '')), '');
@@ -1852,7 +1882,8 @@ begin
   select * into it from public.shop_items where id = p_item for update;
   if not found or not it.active then raise exception 'That reward is not available.'; end if;
   if it.stock <= 0 then raise exception 'Sorry, this reward is out of stock.'; end if;
-  select coalesce(nullif(name, ''), nullif(email, ''), 'A student') into uname from public.profiles where id = auth.uid();
+  select coalesce(nullif(name, ''), nullif(email, ''), 'A student'), coalesce(nullif(name, ''), 'A student')
+    into uname, pname from public.profiles where id = auth.uid();
 
   if it.kind = 'codm' then
     select id, code into cid, ccode from public.shop_codes
@@ -1872,12 +1903,17 @@ begin
             case when it.kind = 'codm' then now() end)
     returning id into oid;
 
+  -- Only MLBB orders need an admin. CODM codes are handed out instantly, so nobody is notified about those.
   if it.kind = 'mlbb' then
-    insert into public.notifications (user_id, kind, title, body, link)
+    insert into public.notifications (user_id, kind, title, body, link, ref_id)
     select p.id, 'shop_order', '💎 New MLBB order: ' || it.title,
-           left(uname || ' · ID ' || gid || ' (Server ' || srv || ') · IGN ' || ign, 300), '#redeem'
+           left(uname || ' · ID ' || gid || ' (Server ' || srv || ') · IGN ' || ign, 300), '#redeem', oid
     from public.profiles p where p.role in ('admin', 'developer');
   end if;
+
+  -- Public activity: the name, never the code / Game ID / email.
+  insert into public.shop_activity (kind, actor_id, actor_name, item_emoji, item_title, amount)
+    values ('redeem', auth.uid(), pname, it.emoji, it.title, it.cost);
 
   return jsonb_build_object('stock', it.stock - 1, 'code', ccode, 'order_id', oid);
 end $$;
@@ -1891,6 +1927,16 @@ begin
   update public.shop_orders set status = 'done', done_at = now()
     where id = p_id and status = 'pending' returning * into o;
   if not found then raise exception 'That order is already delivered or no longer exists.'; end if;
+
+  -- Done: take the "new order" notification away from every other admin / developer (nobody should chase a finished order).
+  delete from public.notifications where kind = 'shop_order' and ref_id = p_id;
+
+  insert into public.shop_activity (kind, actor_id, actor_name, item_emoji, item_title)
+    select 'delivered', o.user_id, coalesce(nullif(pr.name, ''), 'A student'), coalesce(it.emoji, '💎'), o.item_title
+    from (select 1) x
+    left join public.profiles pr on pr.id = o.user_id
+    left join public.shop_items it on it.id = o.item_id;
+
   if o.user_id is not null then
     insert into public.notifications (user_id, kind, title, body, link)
     values (o.user_id, 'shop_done', '✅ ' || o.item_title || ' delivered',
@@ -1908,6 +1954,8 @@ begin
   if not exists (select 1 from public.profiles where id = p_user) then raise exception 'That person was not found.'; end if;
   select coalesce(nullif(name, ''), 'An admin') into who from public.profiles where id = auth.uid();
   insert into public.point_gifts (to_user, from_user, from_name, amount) values (p_user, auth.uid(), who, p_amount);
+  insert into public.shop_activity (kind, actor_id, actor_name, by_name, item_emoji, amount)
+    select 'gift', p_user, coalesce(nullif(name, ''), 'A student'), who, '🎁', p_amount from public.profiles where id = p_user;
   insert into public.notifications (user_id, kind, title, body, link)
   values (p_user, 'points_gift', '🎁 You got ' || to_char(p_amount, 'FM999,999,999') || ' points!',
           who || ' gifted you points. They are in your balance now. Spend them in Redeem.', '#redeem');
@@ -1947,3 +1995,52 @@ grant execute on function public.shop_buy(text, text, text, text) to authenticat
 grant execute on function public.shop_order_done(uuid)          to authenticated;
 grant execute on function public.gift_points(uuid, integer)     to authenticated;
 grant execute on function public.claim_gifts()                  to authenticated;
+
+
+-- =====================================================================
+-- 26) Global chat: one public room that every signed-in account can read and write   -- safe to re-run
+--     * Everyone can read it and post. You can delete your own messages; admins / the developer can delete any.
+--     * Banned accounts can't post (same rule as the rest of the app) and there is a small anti-spam limit.
+-- =====================================================================
+create table if not exists public.global_messages (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  body       text not null check (char_length(trim(body)) between 1 and 500),
+  created_at timestamptz not null default now()
+);
+create index if not exists global_messages_idx on public.global_messages (created_at desc);
+alter table public.global_messages enable row level security;
+
+drop policy if exists "gmsg read" on public.global_messages;
+create policy "gmsg read" on public.global_messages for select to authenticated using (true);
+drop policy if exists "gmsg insert" on public.global_messages;
+create policy "gmsg insert" on public.global_messages for insert to authenticated with check (user_id = auth.uid());
+drop policy if exists "gmsg delete" on public.global_messages;
+create policy "gmsg delete" on public.global_messages for delete to authenticated
+  using (user_id = auth.uid() or public.is_admin());
+
+revoke all on public.global_messages from anon, authenticated;
+grant select, insert, delete on public.global_messages to authenticated;
+
+-- Anti-spam: at most 6 messages every 10 seconds per person.
+create or replace function public.global_messages_guard()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if (select count(*) from public.global_messages
+        where user_id = new.user_id and created_at > now() - interval '10 seconds') >= 6 then
+    raise exception 'Slow down a little. You are sending messages too fast.';
+  end if;
+  return new;
+end $$;
+
+drop trigger if exists global_messages_guard on public.global_messages;
+create trigger global_messages_guard before insert on public.global_messages
+  for each row execute function public.global_messages_guard();
+
+drop trigger if exists global_messages_reject_banned on public.global_messages;
+create trigger global_messages_reject_banned before insert on public.global_messages
+  for each row execute function public.reject_if_banned();
+
+do $$ begin
+  begin alter publication supabase_realtime add table public.global_messages; exception when duplicate_object then null; end;
+end $$;

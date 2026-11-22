@@ -65,7 +65,20 @@ interface ShopOrder {
   created_at: string;
 }
 
-interface ShopUser { id: string; name: string; email: string; role: string; }
+interface ShopUser { id: string; name: string; email: string; role: string; avatar?: string | null; }
+
+/** One line of the public "Recent activity" feed on the Redeem page (no codes, Game IDs or emails). */
+interface ActivityRow {
+  id: string;
+  kind: "redeem" | "delivered" | "gift";
+  actor_id: string | null;
+  actor_name: string;
+  by_name: string;
+  item_emoji: string;
+  item_title: string;
+  amount: number | null;
+  created_at: string;
+}
 
 interface RedeemInfo { gameId?: string; server?: string; ign?: string; }
 
@@ -325,7 +338,7 @@ const Rewards = (() => {
     if (!staff) return [];
     const term = q.replace(/[%,()*\\]/g, " ").trim();
     if (term.length < 2) return [];
-    const { data, error } = await db().from("profiles").select("id,name,email,role")
+    const { data, error } = await db().from("profiles").select("id,name,email,role,avatar")
       .or(`name.ilike.%${term}%,email.ilike.%${term}%`).order("name").limit(8);
     return error ? [] : (data || []);
   }
@@ -338,8 +351,26 @@ const Rewards = (() => {
     return error ? { ok: false, reason: error.message } : { ok: true };
   }
 
+
+  /* ----- public recent activity (everyone can see it) ----- */
+  async function activity(limit = 25): Promise<ActivityRow[]> {
+    const { data, error } = await db().from("shop_activity").select("*").order("created_at", { ascending: false }).limit(limit);
+    return error ? [] : (data || []);
+  }
+
+  /** Calls `fn` whenever someone redeems, gets a delivery or a gift. Returns a function that stops listening. */
+  function watchActivity(fn: () => void): () => void {
+    let ch: any = null;
+    try {
+      ch = db().channel("shop-activity-" + Math.random().toString(36).slice(2, 8))
+        .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_activity" }, fn)
+        .subscribe();
+    } catch { /* realtime unavailable: the feed refreshes when the page is opened */ }
+    return () => { try { if (ch) db().removeChannel(ch); } catch { /* ignore */ } };
+  }
+
   return {
-    MAX_LEVEL, init, setRole, award, redeem, myOrders, claimGifts, levelOf, levelBonus, loadCatalog,
+    MAX_LEVEL, activity, watchActivity, init, setRole, award, redeem, myOrders, claimGifts, levelOf, levelBonus, loadCatalog,
     adminGive, adminSet, adminSaveItem, adminSetStock, adminAddStock, adminAddCodes, adminSetActive, adminDelete,
     adminOrders, adminMarkDone, findUsers, adminGift,
     shop: () => catalog.filter((r) => r.active !== false || staff),

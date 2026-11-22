@@ -58,6 +58,11 @@
         </a>
 
         <p class="nav-heading">Social</p>
+        <a href="#global-chat" class="nav-item" data-view="global-chat">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.8 3 2.8 15 0 18M12 3c-2.8 3-2.8 15 0 18"/></svg>
+          <span>Global chat</span>
+          <span class="nav-badge hidden" id="nav-gc-badge">0</span>
+        </a>
         <a href="#messages" class="nav-item" data-view="messages">
           <svg viewBox="0 0 24 24"><path d="M4 5h16a1 1 0 011 1v10a1 1 0 01-1 1h-9l-5 4v-4H4a1 1 0 01-1-1V6a1 1 0 011-1z"/></svg>
           <span>Messages</span>
@@ -184,7 +189,6 @@
     </button>
   </nav>
 
-  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
   <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
   <script src="js/config.js"></script>
@@ -199,6 +203,7 @@
   <script src="js/announce.js"></script>
   <script src="js/reactions.js"></script>
   <script src="js/messages.js"></script>
+  <script src="js/globalchat.js"></script>
   <script src="js/communities.js"></script>
   <script src="js/feed.js"></script>
   <script src="js/admin.js"></script>

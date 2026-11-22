@@ -8,8 +8,6 @@ const Notify = (() => {
     const listeners = [];
     let onRole = () => { };
     let channel = null;
-    const popupQueue = [];
-    let popupOpen = false;
     const on = (fn) => listeners.push(fn);
     const emit = () => listeners.forEach((fn) => fn());
     async function load() {
@@ -38,116 +36,76 @@ const Notify = (() => {
         emit();
         await db().from("notifications").update({ read: true }).in("id", ids);
     }
-    /* ----- pop-up for the important ones (becoming an admin, community approved) ----- */
-    // New community requests (staff) pop up from communities.js with Approve / Reject, so they are not repeated here.
-    const POPUP_KINDS = new Set(["role", "community_approved", "post_comment", "comment_reply", "points_gift", "shop_order", "shop_done"]);
-    const POPUP_LABEL = { role: "Open", community_approved: "View community", post_comment: "View post", comment_reply: "View post", points_gift: "Open Redeem", shop_order: "Open orders", shop_done: "Open Redeem" };
-    const EMOJI_KINDS = { points_gift: "🎁", shop_order: "💎", shop_done: "✅" };
-    const isCommentKind = (k) => k === "post_comment" || k === "comment_reply";
-    const postIdOf = (n) => { const m = /^#post-(.+)$/.exec(n.link || ""); return m ? m[1] : null; };
-    /** Pop-up that puts the post in focus together with the newest comments on it. Returns the card HTML, or null. */
-    async function commentCard(n, postId) {
-        const { data: post } = await db().from("posts").select("*").eq("id", postId).maybeSingle();
-        if (!post)
-            return null;
-        const { data: cs } = await db().from("post_comments").select("*").eq("post_id", postId)
-            .order("created_at", { ascending: false }).limit(3);
-        const list = (cs || []).slice().reverse();
-        await Social.fetchProfiles([...new Set([post.user_id, ...list.map((c) => c.user_id)])]);
-        const who = Social.person(post.user_id);
-        const media = !post.media_url ? "" : post.media_type === "video"
-            ? `<div class="cm-media video">🎞 Video</div>`
-            : `<img class="cm-media" src="${esc(post.media_url)}" alt="" loading="lazy" />`;
-        const body = post.body ? `<p class="cm-text">${esc(post.body.length > 220 ? post.body.slice(0, 220) + "…" : post.body)}</p>` : "";
-        const comments = list.map((c, i) => {
-            const p = Social.person(c.user_id);
-            return `<div class="cm-comment ${i === list.length - 1 ? "new" : ""}">${Utils.avatar(p.name, p.avatar, "sm")}
-        <div><strong>${Utils.nameWithBadge(p.name, p.role)}</strong><span>${esc(c.body)}</span></div></div>`;
-        }).join("");
-        return `
-      <div class="modal notif-popup cm-popup" role="dialog" aria-modal="true" aria-labelledby="np-title">
-        <h3 id="np-title">${esc(n.title)}</h3>
-        <div class="cm-post">
-          <div class="cm-who">${Utils.avatar(who.name, who.avatar, "sm")}<strong>${Utils.nameWithBadge(who.name, who.role)}</strong></div>
-          ${body}${media}
-        </div>
-        <div class="cm-comments">${comments}</div>
-        <div class="modal-actions">
-          <a class="btn primary np-go" href="${esc(n.link)}">View post</a>
-          <button class="btn ghost np-close" type="button">Got it</button>
-        </div>
-      </div>`;
+    /* ----- sliding notices -----
+       Every new notification slides down from the top like a nav bar (see Utils.notice). Tapping it opens the link and
+       marks it read; letting it slide away on its own leaves it unread in the bell. */
+    // Things that were waiting while the person was away also slide in (newest 3 only, so a long absence isn't noisy).
+    const IMPORTANT = new Set(["role", "community_approved", "post_comment", "comment_reply", "points_gift", "shop_order", "shop_done"]);
+    const ICONS = { role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️", report: "🚩", staff_login: "🟢", points_gift: "🎁", shop_order: "💎", shop_done: "✅" };
+    const LABELS = { role: "Open", community_approved: "View", post_comment: "View post", comment_reply: "View post", points_gift: "Redeem", shop_order: "Orders", shop_done: "Redeem" };
+    const shown = new Map(); // notification id -> its slide-in notice (so it can be pulled back)
+    const orderListeners = [];
+    let ordersChannel = null;
+    const onOrder = (fn) => orderListeners.push(fn);
+    /** A MLBB order is no longer waiting: the other admins / developer stop seeing its notification. */
+    function dropOrder(orderId) {
+        const gone = items.filter((n) => n.kind === "shop_order" && n.ref_id === orderId);
+        if (gone.length) {
+            items = items.filter((n) => !gone.includes(n));
+            gone.forEach((n) => { const h = shown.get(n.id); if (h)
+                h.close(); });
+            emit();
+        }
     }
-    function enqueuePopup(n) {
-        if (popupQueue.some((x) => x.id === n.id))
+    /** Staff only: follow MLBB orders live, so a delivered order disappears for everyone else straight away. */
+    function watchOrders() {
+        if (ordersChannel || !me || !Auth.isStaff(me))
             return;
-        popupQueue.push(n);
-        showNextPopup();
+        try {
+            ordersChannel = db().channel("shop-orders-watch")
+                .on("postgres_changes", { event: "*", schema: "public", table: "shop_orders" }, (payload) => {
+                const o = payload.new || {};
+                if (o.status === "done")
+                    dropOrder(o.id);
+                orderListeners.forEach((fn) => fn());
+            })
+                .subscribe();
+        }
+        catch { /* realtime unavailable: the lists refresh on the next visit */ }
     }
-    function showNextPopup() {
-        if (popupOpen || !popupQueue.length)
+    async function stillWaiting(n) {
+        if (n.kind !== "shop_order" || !n.ref_id)
+            return true;
+        const { data } = await db().from("shop_orders").select("status").eq("id", n.ref_id).maybeSingle();
+        return !!data && data.status === "pending";
+    }
+    function slideIn(n) {
+        if (shown.has(n.id))
             return;
-        const n = popupQueue.shift();
-        popupOpen = true;
-        build(n).catch(() => null).then((html) => {
-            if (!html) {
-                popupOpen = false;
-                showNextPopup();
-                return;
-            }
-            present(n, html);
+        const h = Utils.notice({
+            icon: ICONS[n.kind] || "🔔", title: n.title, body: n.body, href: n.link || undefined, actionLabel: n.link ? (LABELS[n.kind] || "Open") : undefined,
+            ms: 7000, key: "n-" + n.id,
+            onClose: (why) => { shown.delete(n.id); if (why === "dismiss" || why === "open")
+                markRead(n.id); }
         });
-    }
-    async function build(n) {
-        if (isCommentKind(n.kind) && postIdOf(n))
-            return commentCard(n, postIdOf(n));
-        const isRole = n.kind === "role";
-        return `
-      <div class="modal notif-popup" role="dialog" aria-modal="true" aria-labelledby="np-title">
-        <div class="np-icon ${isRole ? "role" : "ok"}">${EMOJI_KINDS[n.kind] ? `<span style="font-size:30px;line-height:1">${EMOJI_KINDS[n.kind]}</span>` : isRole
-            ? '<svg viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 4.5-3.2 7.8-8 9-4.8-1.2-8-4.5-8-9V6z"/><path d="M9 12l2 2 4-4"/></svg>'
-            : '<svg viewBox="0 0 24 24"><circle cx="9" cy="8" r="3.2"/><path d="M2.5 20c.6-3.6 3.2-5.4 6.5-5.4s5.9 1.8 6.5 5.4M16 4.8a3.2 3.2 0 010 6.4M18 14.8c2 .6 3.2 2.3 3.5 5.2"/></svg>'}</div>
-        <h3 id="np-title">${esc(n.title)}</h3>
-        <p>${esc(n.body)}</p>
-        <div class="modal-actions">
-          ${n.link ? `<a class="btn primary np-go" href="${esc(n.link)}">${POPUP_LABEL[n.kind] || "Open"}</a>` : ""}
-          <button class="btn ghost np-close" type="button">Got it</button>
-        </div>
-      </div>`;
-    }
-    function present(n, html) {
-        const wrap = document.createElement("div");
-        wrap.className = "modal-backdrop";
-        wrap.innerHTML = html;
-        const close = () => {
-            wrap.remove();
-            popupOpen = false;
-            markRead(n.id);
-            showNextPopup();
-        };
-        wrap.querySelector(".np-close").addEventListener("click", close);
-        const go = wrap.querySelector(".np-go");
-        if (go)
-            go.addEventListener("click", close);
-        wrap.addEventListener("click", (e) => { if (e.target === wrap)
-            close(); });
-        document.body.appendChild(wrap);
-        wrap.querySelector(".np-close").focus();
+        shown.set(n.id, h);
     }
     async function init(user, { onRoleChange } = {}) {
         me = user;
         onRole = onRoleChange || (() => { });
         await load();
-        // Anything important that arrived while the person was away.
+        watchOrders();
+        // Anything important that arrived while the person was away. Orders that were already delivered are skipped.
         let oneComment = false;
-        items.filter((n) => !n.read && POPUP_KINDS.has(n.kind)).forEach((n) => {
-            if (isCommentKind(n.kind)) {
-                if (oneComment)
-                    return;
-                oneComment = true;
-            }
-            enqueuePopup(n);
+        const waiting = items.filter((n) => !n.read && IMPORTANT.has(n.kind)).filter((n) => {
+            if (n.kind !== "post_comment" && n.kind !== "comment_reply")
+                return true;
+            if (oneComment)
+                return false;
+            return (oneComment = true);
         });
+        const checks = await Promise.all(waiting.map((n) => stillWaiting(n).catch(() => true)));
+        waiting.filter((_, i) => checks[i]).slice(0, 3).reverse().forEach((n, i) => setTimeout(() => slideIn(n), 500 + i * 700));
         channel = db().channel("my-notifications")
             .on("postgres_changes", { event: "INSERT", schema: "public", table: "notifications", filter: `user_id=eq.${me.id}` }, async (payload) => {
             const n = payload.new;
@@ -155,17 +113,16 @@ const Notify = (() => {
                 return;
             items.unshift(n);
             emit();
-            if (n.kind === "role")
-                await onRole(); // show / hide the Admin panel right away
-            if (POPUP_KINDS.has(n.kind))
-                enqueuePopup(n);
-            else
-                Utils.toast(n.title + (n.body ? " — " + n.body : ""), 4500);
+            if (n.kind === "role") {
+                await onRole();
+                watchOrders();
+            } // show / hide the Admin panel right away
+            slideIn(n);
         })
             .subscribe();
     }
     return {
-        init, on, markRead, markAllRead,
+        init, on, onOrder, dropOrder, markRead, markAllRead,
         list: () => items,
         get unreadCount() { return items.filter((n) => !n.read).length; }
     };

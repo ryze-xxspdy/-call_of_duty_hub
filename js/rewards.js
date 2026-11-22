@@ -281,7 +281,7 @@ const Rewards = (() => {
         const term = q.replace(/[%,()*\\]/g, " ").trim();
         if (term.length < 2)
             return [];
-        const { data, error } = await db().from("profiles").select("id,name,email,role")
+        const { data, error } = await db().from("profiles").select("id,name,email,role,avatar")
             .or(`name.ilike.%${term}%,email.ilike.%${term}%`).order("name").limit(8);
         return error ? [] : (data || []);
     }
@@ -294,8 +294,28 @@ const Rewards = (() => {
         const { error } = await db().rpc("gift_points", { p_user: userId, p_amount: Math.floor(amount) });
         return error ? { ok: false, reason: error.message } : { ok: true };
     }
+    /* ----- public recent activity (everyone can see it) ----- */
+    async function activity(limit = 25) {
+        const { data, error } = await db().from("shop_activity").select("*").order("created_at", { ascending: false }).limit(limit);
+        return error ? [] : (data || []);
+    }
+    /** Calls `fn` whenever someone redeems, gets a delivery or a gift. Returns a function that stops listening. */
+    function watchActivity(fn) {
+        let ch = null;
+        try {
+            ch = db().channel("shop-activity-" + Math.random().toString(36).slice(2, 8))
+                .on("postgres_changes", { event: "INSERT", schema: "public", table: "shop_activity" }, fn)
+                .subscribe();
+        }
+        catch { /* realtime unavailable: the feed refreshes when the page is opened */ }
+        return () => { try {
+            if (ch)
+                db().removeChannel(ch);
+        }
+        catch { /* ignore */ } };
+    }
     return {
-        MAX_LEVEL, init, setRole, award, redeem, myOrders, claimGifts, levelOf, levelBonus, loadCatalog,
+        MAX_LEVEL, activity, watchActivity, init, setRole, award, redeem, myOrders, claimGifts, levelOf, levelBonus, loadCatalog,
         adminGive, adminSet, adminSaveItem, adminSetStock, adminAddStock, adminAddCodes, adminSetActive, adminDelete,
         adminOrders, adminMarkDone, findUsers, adminGift,
         shop: () => catalog.filter((r) => r.active !== false || staff),

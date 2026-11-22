@@ -139,6 +139,7 @@ before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
     js/notify.js    notification pop-ups + panel data
     js/announce.js  announcements: one-time pop-up, 24h window
     js/messages.js  1-to-1 chat + unread count
+    js/globalchat.js  Global chat (one public room for everyone)
     js/communities.js  community requests, approval, members, community chat
     js/contact.js   Contact staff page (message the developer / admins)
     js/onboarding.js first-time profile setup screen (username, photo, banner, bio, phone)
@@ -176,3 +177,20 @@ before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
   `shop_orders`, `point_gifts` and the `shop_*`, `gift_points` and `claim_gifts` functions. Until then the shop is empty and the admin tools are disabled.
   Code: `src/rewards.ts` (points, shop loading, gifts, admin functions), `src/redeem.tsx` (the page + admin panel) and `src/games/games.tsx` (points bar).
   Run `tsc -p .` (or `npm run build`) after editing `src/`.
+
+- **Sliding notifications**: every notification and toast now slides down from the top like a nav bar, waits a few seconds and slides away
+  (`Utils.notice` / `Utils.toast` in `src/utils.ts`, styles in `css/base.css`). Tap it to open its link, tap **×** or swipe it up to dismiss, hover / touch
+  pauses the timer. Bell notifications (orders, gifts, comments, role changes...) use it instead of the old centred pop-ups. One that slid away on its own
+  stays unread in the bell; tapping or dismissing it marks it read.
+- **Finished orders stop notifying other staff**: an MLBB order notifies every admin / the developer once, and the notification carries the order id.
+  The moment one of them taps **Mark delivered**, that notification is deleted for all the others (their bell, and a banner still on screen slides away),
+  and their Orders list refreshes live. CODM orders are done instantly, so no admin is ever notified about them.
+- **Cleaner Redeem admin tools**: one card with tabs: **Orders** (red number = waiting), **Gift points**, **Add reward**, **Stock**.
+  Gifting is now two steps (search + pick a person, then an amount with quick chips) and asks you to confirm before sending.
+- **Recent activity is public**: the Redeem page ends with a live feed everyone can see: who redeemed what, what was delivered and who received a gift.
+  It is stored in `shop_activity` and never contains codes, Game IDs, server numbers or emails. Your own game-points history moved into a collapsed
+  **Your points history** below it.
+- **Global chat** (sidebar, Social -> **Global chat**, `#global-chat`): one public room for every signed-in account, live. Day dividers, grouped messages,
+  "Load earlier messages", a **New messages** pill when you're scrolled up, and an unread number on the sidebar link. Delete your own messages
+  (admins / the developer can delete any). Banned accounts can't post, and there is a small anti-spam limit (6 messages / 10 seconds).
+  **Re-run `supabase/schema.sql`** (section 25 was extended, section 26 is new) to add `notifications.ref_id`, `shop_activity` and `global_messages`.

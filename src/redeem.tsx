@@ -2,8 +2,8 @@
    CODM  -> the student gets a code straight away.
    MLBB  -> the student enters Game ID, Server and IGN; admins / the developer get a notification and deliver it.
    A reward with no stock turns gray.
-   Admins and the developer also get an admin panel here: give themselves points, GIFT POINTS to anyone (points only, never levels),
-   add rewards, add stock / codes and deliver MLBB orders. */
+   Admins and the developer also get an admin panel here (tabs: Orders, Gift points, Add reward, Stock) and can give themselves points.
+   "Recent activity" at the bottom is PUBLIC: everyone sees who redeemed, got a delivery or received a gift (never codes, IDs or emails). */
 const Redeem = (() => {
   function when(t: number | string): string {
     const ms = typeof t === "number" ? t : new Date(t).getTime();
@@ -101,109 +101,147 @@ const Redeem = (() => {
     );
     return (
       <div className="adm-bar">
-        <strong>🛡️ Admin: give yourself points</strong>
+        <strong>🛡️ Your points <small>(admins only)</small></strong>
         <div className="adm-row">
           <input type="number" min="0" step="1" placeholder="Amount" ref={(el: HTMLInputElement) => (input = el)} />
           <button type="button" className="btn-sm primary" onClick={() => done(Rewards.adminGive(amount()), `+${amount().toLocaleString()} points added.`)}>Add</button>
           <button type="button" className="btn-sm" onClick={() => done(Rewards.adminSet(amount()), `Balance set to ${amount().toLocaleString()} points.`)}>Set balance</button>
           {chip(1000)}{chip(10000)}{chip(100000)}
         </div>
-        <small>Only you can see this. Admins and the developer are always Level {Rewards.MAX_LEVEL}.</small>
+        <small>Only admins can see this. Admins and the developer are always Level {Rewards.MAX_LEVEL}.</small>
       </div>
     );
   }
 
-  /** Gift points to another person. Points only: their level and XP stay exactly as they are. */
-  function giftCard(): Node {
-    let search: HTMLInputElement, amount: HTMLInputElement, results: HTMLElement, picked: HTMLElement, sendBtn: HTMLButtonElement;
-    let target: ShopUser | null = null;
+  const roleTag = (role: string) => (role && role !== "student" ? raw(Utils.roleBadge(role)) : null);
 
-    const paintPicked = () => {
-      picked.textContent = target ? `Gifting to: ${target.name || target.email} (${target.email})` : "Search for someone, then tap their name.";
+  /** Gift points to another person. Points only: their level and XP stay exactly as they are.
+   *  Two steps: 1) pick who (live search), 2) pick how many. */
+  function giftCard(): Node {
+    let search: HTMLInputElement, amount: HTMLInputElement, results: HTMLElement, pickStep: HTMLElement, chosenStep: HTMLElement,
+        chosenBox: HTMLElement, sendBtn: HTMLButtonElement;
+    let target: ShopUser | null = null;
+    let timer: any, seq = 0;
+
+    const personRow = (u: ShopUser) => (
+      <span className="gp-person">
+        {raw(Utils.avatar(u.name || u.email, u.avatar || null, "sm"))}
+        <span className="gp-who"><b>{u.name || "(no name)"}{roleTag(u.role)}</b><small>{u.email}</small></span>
+      </span>
+    );
+
+    const amountNow = () => Math.floor(Number(String(amount.value).replace(/,/g, "")));
+    const paint = () => {
+      pickStep.classList.toggle("hidden", !!target);
+      chosenStep.classList.toggle("hidden", !target);
+      if (target) mountInto(chosenBox, personRow(target));
+      const n = amountNow();
       sendBtn.disabled = !target;
+      sendBtn.textContent = target && Number.isFinite(n) && n > 0 ? `Send ${n.toLocaleString()} points` : "Send gift";
     };
 
     const doSearch = async () => {
-      const q = search.value.trim();
-      if (q.length < 2) return Utils.toast("Type at least 2 letters of a name or email.", 2600);
-      results.textContent = "Searching…";
+      const q = search.value.trim(), mine = ++seq;
+      if (q.length < 2) { mountInto(results, <small className="gp-hint">Type at least 2 letters of a name or email.</small>); return; }
+      mountInto(results, <small className="gp-hint">Searching…</small>);
       const users = await Rewards.findUsers(q);
+      if (mine !== seq) return;
       mountInto(results, users.length ? users.map((u) => (
-        <button type="button" className={"gift-user" + (target && target.id === u.id ? " on" : "")} onClick={(e: Event) => {
-          target = u;
-          results.querySelectorAll(".gift-user").forEach((b) => b.classList.remove("on"));
-          (e.currentTarget as HTMLElement).classList.add("on");
-          paintPicked();
-        }}>
-          <b>{u.name || "(no name)"}</b><small>{u.email}{u.role !== "student" ? " · " + u.role : ""}</small>
+        <button type="button" className="gp-result" onClick={() => { target = u; paint(); amount.focus(); }}>
+          {personRow(u)}<span className="gp-pick">Select</span>
         </button>
-      )) : <small>No one found.</small>);
+      )) : <small className="gp-hint">No one found.</small>);
     };
 
     const send = async () => {
       if (!target) return;
-      const n = Number(String(amount.value).replace(/,/g, ""));
+      const n = amountNow();
       if (!Number.isFinite(n) || n < 1) return Utils.toast("Enter how many points to gift.", 2600);
-      sendBtn.disabled = true;
       const who = target.name || target.email;
-      const res = await Rewards.adminGift(target.id, Math.floor(n));
-      sendBtn.disabled = !target;
-      if (!res.ok) return Utils.toast(res.reason || "Couldn't send the gift.", 4200);
-      Utils.toast(`🎁 Gifted ${Math.floor(n).toLocaleString()} points to ${who}.`, 3200);
-      amount.value = "";
+      if (!confirm(`Send ${n.toLocaleString()} points to ${who}?`)) return;
+      sendBtn.disabled = true;
+      const res = await Rewards.adminGift(target.id, n);
+      if (!res.ok) { paint(); return Utils.toast(res.reason || "Couldn't send the gift.", 4200); }
+      Utils.toast(`🎁 Sent ${n.toLocaleString()} points to ${who}.`, 3200);
+      amount.value = ""; target = null; search.value = "";
+      mountInto(results);
+      paint();
     };
 
-    const chip = (n: number) => <button type="button" className="btn-sm" onClick={() => { amount.value = String(n); }}>{n.toLocaleString()}</button>;
+    const chip = (n: number) => <button type="button" className="chip-btn" onClick={() => { amount.value = String(n); paint(); }}>{n.toLocaleString()}</button>;
 
     const card = (
       <div className="adm-card">
         <h3>🎁 Gift points</h3>
-        <p className="adm-hint">Send points to anyone. They go straight into their balance and they get a notification. Only points are gifted. Their level and XP don't change.</p>
-        <div className="adm-row">
-          <input type="text" placeholder="Name or email" style="width:220px" ref={(el: HTMLInputElement) => { search = el; el.addEventListener("keydown", (e) => { if ((e as KeyboardEvent).key === "Enter") doSearch(); }); }} />
-          <button type="button" className="btn-sm" onClick={doSearch}>Search</button>
+        <p className="adm-hint">Points go straight into their balance and they get a notification. Levels and XP never change.</p>
+
+        <div className="gp-step">
+          <span className="gp-label">1 · Who gets it?</span>
+          <div ref={(el: HTMLElement) => (pickStep = el)}>
+            <input type="search" className="gp-search" placeholder="Search a name or email…" autoComplete="off"
+              ref={(el: HTMLInputElement) => { search = el; el.addEventListener("input", () => { clearTimeout(timer); timer = setTimeout(doSearch, 260); }); }} />
+            <div className="gp-results" ref={(el: HTMLElement) => (results = el)}></div>
+          </div>
+          <div className="gp-chosen hidden" ref={(el: HTMLElement) => (chosenStep = el)}>
+            <div ref={(el: HTMLElement) => (chosenBox = el)}></div>
+            <button type="button" className="btn-sm ghost" onClick={() => { target = null; paint(); search.focus(); }}>Change</button>
+          </div>
         </div>
-        <div className="gift-results" ref={(el: HTMLElement) => (results = el)}></div>
-        <div className="gift-picked" ref={(el: HTMLElement) => (picked = el)}></div>
-        <div className="adm-row">
-          <input type="number" min="1" step="1" placeholder="Points to gift" ref={(el: HTMLInputElement) => (amount = el)} />
-          {chip(1000)}{chip(5000)}{chip(10000)}
-          <button type="button" className="btn-sm primary" ref={(el: HTMLButtonElement) => (sendBtn = el)} onClick={send}>Send gift</button>
+
+        <div className="gp-step">
+          <span className="gp-label">2 · How many points?</span>
+          <input type="number" min="1" step="1" className="gp-amount" placeholder="e.g. 5,000"
+            ref={(el: HTMLInputElement) => { amount = el; el.addEventListener("input", paint); }} />
+          <div className="gp-chips">{chip(1000)}{chip(5000)}{chip(10000)}{chip(50000)}</div>
         </div>
+
+        <button type="button" className="btn primary gp-send" ref={(el: HTMLButtonElement) => (sendBtn = el)} onClick={send}>Send gift</button>
       </div>
     );
-    paintPicked();
+    mountInto(results, <small className="gp-hint">Search for the person you want to gift.</small>);
+    paint();
     return card;
   }
 
+  /* Orders: the list reloads by itself when anyone (this admin or another one) marks an order delivered. */
+  let ordersReload: (() => void) | null = null;
+  let ordersHost: HTMLElement | null = null;
+  Notify.onOrder(() => { if (ordersReload && ordersHost && ordersHost.isConnected) ordersReload(); });
+
   /** MLBB orders waiting for the admin, plus the last delivered ones. */
-  function ordersCard(): Node {
+  function ordersCard(onCount: (n: number) => void): Node {
     let box: HTMLElement;
     const load = async () => {
       const all = (await Rewards.adminOrders()).filter((o) => o.kind === "mlbb");
+      if (!box || !box.isConnected) return;
       const pending = all.filter((o) => o.status === "pending").reverse();   // oldest first
-      const done = all.filter((o) => o.status === "done").slice(0, 8);
+      const done = all.filter((o) => o.status === "done").slice(0, 6);
+      onCount(pending.length);
+
+      const detail = (label: string, value: string | null) => <span className="ord-d"><small>{label}</small><code>{value}</code></span>;
       const row = (o: ShopOrder) => (
-        <div className={"adm-order" + (o.status === "done" ? " done" : "")}>
-          <div className="adm-order-main">
-            <b>{o.item_title}</b> <small>· {o.user_name || "Student"} · {when(o.created_at)}</small>
-            <div className="adm-order-info">ID <code>{o.game_id}</code> · Server <code>{o.server}</code> · IGN <code>{o.ign}</code></div>
+        <div className={"ord" + (o.status === "done" ? " done" : "")}>
+          <div className="ord-top">
+            <b>{o.item_title}</b>
+            <span className="ord-who">{o.user_name || "Student"} · {when(o.created_at)}</span>
           </div>
+          <div className="ord-info">{detail("Game ID", o.game_id)}{detail("Server", o.server)}{detail("IGN", o.ign)}</div>
           {o.status === "pending" ? (
-            <span className="adm-order-btns">
+            <div className="ord-btns">
               <button type="button" className="btn-sm" onClick={() => copyText(`${o.game_id} (${o.server}) ${o.ign}`)}>Copy details</button>
               <button type="button" className="btn-sm primary" onClick={async (e: Event) => {
                 (e.currentTarget as HTMLButtonElement).disabled = true;
                 const res = await Rewards.adminMarkDone(o.id);
+                if (res.ok) Notify.dropOrder(o.id);
                 Utils.toast(res.ok ? "Marked as delivered. The student was told." : res.reason || "Couldn't update.", 3200);
                 load();
               }}>Mark delivered</button>
-            </span>
-          ) : <span className="adm-stock">Delivered ✓</span>}
+            </div>
+          ) : <span className="ord-done">Delivered ✓</span>}
         </div>
       );
       mountInto(box,
-        pending.length ? pending.map(row) : <small>No MLBB orders waiting. 🎉</small>,
+        pending.length ? pending.map(row) : <div className="adm-empty">No MLBB orders waiting. 🎉</div>,
         done.length ? <h4 className="adm-sub">Recently delivered</h4> : null,
         done.map(row)
       );
@@ -211,16 +249,19 @@ const Redeem = (() => {
     const card = (
       <div className="adm-card">
         <h3>💎 MLBB orders</h3>
-        <p className="adm-hint">You get a notification for every new order. Send the diamonds / item in the game, then tap <b>Mark delivered</b> so the student knows.</p>
+        <p className="adm-hint">Send the diamonds / item in the game, then tap <b>Mark delivered</b>. Once it is delivered the order disappears for the other admins too. CODM codes are handed out automatically, so they never show up here.</p>
         <div ref={(el: HTMLElement) => (box = el)}><small>Loading…</small></div>
-        <button type="button" className="btn-sm ghost" style="margin-top:8px" onClick={load}>Refresh orders</button>
       </div>
     );
+    ordersReload = load;
+    ordersHost = card as HTMLElement;
     load();
     return card;
   }
 
-  /** The "add a reward" form, the stock list, gifts and orders. */
+  /** The admin tools, one tab at a time: Orders · Gift points · Add reward · Stock. */
+  let adminTab = "orders";
+
   function adminPanel(view: HTMLElement, reload: () => void): Node {
     const items = Rewards.shop();
     const editable = Rewards.shopEditable();
@@ -243,20 +284,22 @@ const Redeem = (() => {
 
     const addForm = (
       <div className="adm-card">
-        <h3>Add a reward</h3>
-        <p className="adm-hint">New rewards show up in the shop for everyone straight away. <b>CODM</b>: paste the codes, one per line (the number of codes is the stock). <b>MLBB</b>: set how many you can deliver.</p>
+        <h3>➕ Add a reward</h3>
+        <p className="adm-hint">It shows up in the shop for everyone straight away. <b>CODM</b>: paste the codes, one per line (the number of codes is the stock). <b>MLBB</b>: set how many you can deliver.</p>
         <div className="adm-form">
-          <select ref={(el: HTMLSelectElement) => { fKind = el; el.addEventListener("change", syncKind); }}>
-            <option value="codm">CODM: student gets a code</option>
-            <option value="mlbb">MLBB: student enters ID, server, IGN</option>
-          </select>
-          <input type="text" maxLength="8" placeholder="Emoji 🎁" ref={(el: HTMLInputElement) => (fEmoji = el)} />
-          <input type="text" maxLength="40" placeholder="Name (e.g. 80 CP)" ref={(el: HTMLInputElement) => (fTitle = el)} />
-          <input type="text" maxLength="120" placeholder="Short description" className="wide" ref={(el: HTMLInputElement) => (fBlurb = el)} />
-          <input type="number" min="1" step="1" placeholder="Cost (points)" ref={(el: HTMLInputElement) => (fCost = el)} />
-          <span ref={(el: HTMLElement) => (stockWrap = el)} className="hidden"><input type="number" min="0" step="1" placeholder="Stock (how many)" ref={(el: HTMLInputElement) => (fStock = el)} /></span>
-          <span ref={(el: HTMLElement) => (codesWrap = el)} className="wide"><textarea rows="4" placeholder={"Paste CODM codes here, one per line"} ref={(el: HTMLTextAreaElement) => (fCodes = el)}></textarea></span>
-          <button type="button" className="btn primary" disabled={!editable} onClick={async (e: Event) => {
+          <label className="adm-field wide"><span>Type</span>
+            <select ref={(el: HTMLSelectElement) => { fKind = el; el.addEventListener("change", syncKind); }}>
+              <option value="codm">CODM: student gets a code</option>
+              <option value="mlbb">MLBB: student enters ID, server, IGN</option>
+            </select>
+          </label>
+          <label className="adm-field"><span>Emoji</span><input type="text" maxLength="8" placeholder="🎁" ref={(el: HTMLInputElement) => (fEmoji = el)} /></label>
+          <label className="adm-field"><span>Name</span><input type="text" maxLength="40" placeholder="e.g. 80 CP" ref={(el: HTMLInputElement) => (fTitle = el)} /></label>
+          <label className="adm-field wide"><span>Short description</span><input type="text" maxLength="120" placeholder="What does the student get?" ref={(el: HTMLInputElement) => (fBlurb = el)} /></label>
+          <label className="adm-field"><span>Cost (points)</span><input type="number" min="1" step="1" placeholder="e.g. 5000" ref={(el: HTMLInputElement) => (fCost = el)} /></label>
+          <label className="adm-field hidden" ref={(el: HTMLElement) => (stockWrap = el)}><span>Stock (how many)</span><input type="number" min="0" step="1" placeholder="e.g. 20" ref={(el: HTMLInputElement) => (fStock = el)} /></label>
+          <label className="adm-field wide" ref={(el: HTMLElement) => (codesWrap = el)}><span>CODM codes (one per line)</span><textarea rows="4" placeholder={"ABCD-1234\nEFGH-5678"} ref={(el: HTMLTextAreaElement) => (fCodes = el)}></textarea></label>
+          <button type="button" className="btn primary wide" disabled={!editable} onClick={async (e: Event) => {
             const btn = e.currentTarget as HTMLButtonElement;
             const kind = fKind.value as "codm" | "mlbb";
             btn.disabled = true;
@@ -277,45 +320,73 @@ const Redeem = (() => {
       const isCodm = r.kind === "codm";
       return (
         <div className={"adm-item" + (r.active === false ? " off" : "")}>
-          <span className="adm-name">{r.emoji} <b>{r.title}</b> <small>{r.cost.toLocaleString()} pts · {kindName(r.kind)}{r.active === false ? " · hidden" : ""}</small></span>
-          <span className={"adm-stock" + (r.stock <= 0 ? " out" : "")}>{isCodm ? (r.stock <= 0 ? "No codes left" : `${r.stock.toLocaleString()} ${r.stock === 1 ? "code" : "codes"} left`) : stockText(r)}</span>
-          {isCodm ? (
-            <textarea rows="2" placeholder="New codes, one per line" className="adm-codes" disabled={!editable} ref={(el: HTMLTextAreaElement) => (codes = el)}></textarea>
-          ) : (
-            <input type="number" min="0" step="1" placeholder="Qty" ref={(el: HTMLInputElement) => (qty = el)} disabled={!editable} />
-          )}
-          {isCodm ? (
-            <button type="button" className="btn-sm primary" disabled={!editable} onClick={async () => {
-              if (!codes.value.trim()) return Utils.toast("Paste at least one code.", 2600);
-              if (await run(Rewards.adminAddCodes(r.id, codes.value), `Codes added to ${r.title}.`)) codes.value = "";
-            }}>+ Add codes</button>
-          ) : (
+          <div className="adm-item-head">
+            <span className="adm-name">{r.emoji} <b>{r.title}</b> <small>{r.cost.toLocaleString()} pts · {kindName(r.kind)}{r.active === false ? " · hidden" : ""}</small></span>
+            <span className={"adm-stock" + (r.stock <= 0 ? " out" : "")}>{isCodm ? (r.stock <= 0 ? "No codes left" : `${r.stock.toLocaleString()} ${r.stock === 1 ? "code" : "codes"} left`) : stockText(r)}</span>
+          </div>
+          <div className="adm-item-ctl">
+            {isCodm ? (
+              <textarea rows="2" placeholder="New codes, one per line" className="adm-codes" disabled={!editable} ref={(el: HTMLTextAreaElement) => (codes = el)}></textarea>
+            ) : (
+              <input type="number" min="0" step="1" placeholder="Qty" ref={(el: HTMLInputElement) => (qty = el)} disabled={!editable} />
+            )}
+            {isCodm ? (
+              <button type="button" className="btn-sm primary" disabled={!editable} onClick={async () => {
+                if (!codes.value.trim()) return Utils.toast("Paste at least one code.", 2600);
+                if (await run(Rewards.adminAddCodes(r.id, codes.value), `Codes added to ${r.title}.`)) codes.value = "";
+              }}>+ Add codes</button>
+            ) : (
+              <span className="adm-btns">
+                <button type="button" className="btn-sm primary" disabled={!editable} onClick={() => {
+                  const n = Number(String(qty.value).trim());
+                  if (!String(qty.value).trim() || !Number.isFinite(n) || n < 1) return Utils.toast("Type how many to add.", 2600);
+                  run(Rewards.adminAddStock(r.id, n), `Added ${n.toLocaleString()} to ${r.title}.`);
+                }}>+ Add stock</button>
+                <button type="button" className="btn-sm" disabled={!editable} onClick={() => {
+                  const n = Number(String(qty.value).trim());
+                  if (!String(qty.value).trim() || !Number.isFinite(n) || n < 0) return Utils.toast("Type the exact stock (0 or more).", 2600);
+                  run(Rewards.adminSetStock(r.id, n), `${r.title} stock set to ${n.toLocaleString()}.`);
+                }}>Set</button>
+              </span>
+            )}
             <span className="adm-btns">
-              <button type="button" className="btn-sm primary" disabled={!editable} onClick={() => {
-                const n = Number(String(qty.value).trim());
-                if (!String(qty.value).trim() || !Number.isFinite(n) || n < 1) return Utils.toast("Type how many to add.", 2600);
-                run(Rewards.adminAddStock(r.id, n), `Added ${n.toLocaleString()} to ${r.title}.`);
-              }}>+ Add stock</button>
-              <button type="button" className="btn-sm" disabled={!editable} onClick={() => {
-                const n = Number(String(qty.value).trim());
-                if (!String(qty.value).trim() || !Number.isFinite(n) || n < 0) return Utils.toast("Type the exact stock (0 or more).", 2600);
-                run(Rewards.adminSetStock(r.id, n), `${r.title} stock set to ${n.toLocaleString()}.`);
-              }}>Set</button>
+              <button type="button" className="btn-sm ghost" disabled={!editable} onClick={() => run(Rewards.adminSetActive(r.id, r.active === false), r.active === false ? `${r.title} is visible again.` : `${r.title} is hidden from students.`)}>{r.active === false ? "Show" : "Hide"}</button>
+              <button type="button" className="btn-sm ghost danger" disabled={!editable} onClick={() => {
+                if (!confirm(`Delete ${r.title} from the shop? ${isCodm ? "Its unused codes are deleted too. " : ""}Past orders stay in the list.`)) return;
+                run(Rewards.adminDelete(r.id), `${r.title} was deleted.`);
+              }}>Delete</button>
             </span>
-          )}
-          <button type="button" className="btn-sm ghost" disabled={!editable} onClick={() => run(Rewards.adminSetActive(r.id, r.active === false), r.active === false ? `${r.title} is visible again.` : `${r.title} is hidden from students.`)}>{r.active === false ? "Show" : "Hide"}</button>
-          <button type="button" className="btn-sm ghost danger" disabled={!editable} onClick={() => {
-            if (!confirm(`Delete ${r.title} from the shop? ${isCodm ? "Its unused codes are deleted too. " : ""}Past orders stay in the list.`)) return;
-            run(Rewards.adminDelete(r.id), `${r.title} was deleted.`);
-          }}>Delete</button>
+          </div>
         </div>
       );
     };
 
+    const stockCard = (
+      <div className="adm-card">
+        <h3>📦 Stock</h3>
+        <p className="adm-hint">A reward with no stock turns <b>gray</b> for students. <b>CODM</b>: paste more codes, then <b>+ Add codes</b>. <b>MLBB</b>: type a number, then <b>+ Add stock</b> (on top) or <b>Set</b> (exact amount). Hidden items are only visible to admins.</p>
+        <div className="adm-list">{items.length ? items.map(row) : <div className="adm-empty">No rewards yet. Add one in the “Add reward” tab.</div>}</div>
+        <button type="button" className="btn-sm ghost" onClick={refresh}>Refresh stock</button>
+      </div>
+    );
+
+    /* ----- tabs ----- */
+    let countBadge: HTMLElement;
+    const setCount = (n: number) => { if (!countBadge) return; countBadge.textContent = String(n); countBadge.classList.toggle("hidden", n === 0); };
+    const TABS: [string, string][] = [["orders", "💎 Orders"], ["gift", "🎁 Gift points"], ["add", "➕ Add reward"], ["stock", "📦 Stock"]];
+    const panes: Record<string, Node> = { orders: ordersCard(setCount), gift: giftCard(), add: addForm, stock: stockCard };
+
+    const show = (id: string, root: HTMLElement) => {
+      adminTab = id;
+      root.querySelectorAll<HTMLElement>(".adm-tab").forEach((t) => { t.classList.toggle("on", t.dataset.tab === id); t.setAttribute("aria-selected", String(t.dataset.tab === id)); });
+      root.querySelectorAll<HTMLElement>(".adm-pane").forEach((pn) => pn.classList.toggle("hidden", pn.dataset.pane !== id));
+    };
+    if (!panes[adminTab]) adminTab = "orders";
+
     const err = Rewards.shopError();
-    return (
+    const panel = (
       <section className="adm-panel">
-        <h2 className="section-title">🛡️ Admin panel</h2>
+        <h2 className="section-title">🛡️ Admin tools</h2>
         {giveBar(reload)}
         {!editable ? (
           <div className="adm-warn">
@@ -323,17 +394,18 @@ const Redeem = (() => {
             {err ? <small>{err}</small> : null}
           </div>
         ) : null}
-        {giftCard()}
-        {ordersCard()}
-        {addForm}
-        <div className="adm-card">
-          <h3>Stock</h3>
-          <p className="adm-hint">A reward with no stock turns <b>gray</b> for students. <b>CODM</b>: paste more codes and tap <b>+ Add codes</b>. <b>MLBB</b>: type a number, then <b>+ Add stock</b> (add on top) or <b>Set</b> (exact amount). Hidden items are only visible to admins.</p>
-          <div className="adm-list">{items.length ? items.map(row) : <small>No rewards yet. Add one above.</small>}</div>
-          <button type="button" className="btn-sm ghost" onClick={refresh}>Refresh stock</button>
+        <div className="adm-tabs" role="tablist">
+          {TABS.map(([id, label]) => (
+            <button type="button" role="tab" className="adm-tab" data-tab={id} onClick={(e: Event) => show(id, (e.currentTarget as HTMLElement).closest(".adm-panel") as HTMLElement)}>
+              {label}{id === "orders" ? <i className="adm-count hidden" ref={(el: HTMLElement) => (countBadge = el)}>0</i> : null}
+            </button>
+          ))}
         </div>
+        {TABS.map(([id]) => <div className="adm-pane" data-pane={id}>{panes[id]}</div>)}
       </section>
-    );
+    ) as HTMLElement;
+    show(adminTab, panel);
+    return panel;
   }
 
   /** "My redemptions": CODM codes stay here so students can find them again. */
@@ -359,6 +431,78 @@ const Redeem = (() => {
         <h2 className="section-title" style="margin-top:26px">My redemptions</h2>
         <div className="rd-log" ref={(el: HTMLElement) => (box = el)}><div className="empty-state" style="padding:24px 20px">Loading…</div></div>
       </div>
+    );
+  }
+
+  /** PUBLIC recent activity: who redeemed what, what was delivered and who got a gift. Everyone sees the same feed, live.
+   *  It only holds names, item names and amounts. Never codes, Game IDs or emails. */
+  let stopActivity: (() => void) | null = null;
+
+  function activitySection(): Node {
+    let box: HTMLElement;
+
+    const line = (a: ActivityRow) => {
+      const who = (
+        <a className="act-name" href={a.actor_id ? `#user-${a.actor_id}` : "#redeem"}>{a.actor_name || "Someone"}</a>
+      );
+      const item = <span className="act-item">{a.item_emoji} {a.item_title}</span>;
+      const text = a.kind === "gift"
+        ? <>{who} received <b className="act-pts">{(a.amount || 0).toLocaleString()} points</b>{a.by_name ? <> from {a.by_name}</> : null}</>
+        : a.kind === "delivered"
+          ? <>{who}'s {item} was <b className="act-ok">delivered</b></>
+          : <>{who} redeemed {item}</>;
+      const p = a.actor_id ? Social.person(a.actor_id) : null;
+      return (
+        <div className="act-row">
+          {raw(Utils.avatar(a.actor_name, p ? p.avatar : null, "sm"))}
+          <span className="act-text">{text}</span>
+          <span className="act-icon" aria-hidden="true">{a.kind === "gift" ? "🎁" : a.kind === "delivered" ? "✅" : "🛒"}</span>
+          <span className="rd-when">{when(a.created_at)}</span>
+        </div>
+      );
+    };
+
+    const load = async () => {
+      const rows = await Rewards.activity(25);
+      if (!box || !box.isConnected) return;
+      const missing = [...new Set(rows.map((r) => r.actor_id).filter((id): id is string => !!id && Social.person(id).name === "Unknown"))];
+      if (missing.length) await Social.fetchProfiles(missing);
+      if (!box.isConnected) return;
+      mountInto(box, rows.length ? rows.map(line) : <div className="empty-state" style="padding:26px 20px">Nothing yet. Redeem a reward to be the first!</div>);
+    };
+
+    if (stopActivity) stopActivity();
+    stopActivity = Rewards.watchActivity(() => {
+      if (!box || !box.isConnected) { if (stopActivity) { stopActivity(); stopActivity = null; } return; }
+      load();
+    });
+    load();
+
+    return (
+      <div>
+        <h2 className="section-title" style="margin-top:26px">Recent activity <span className="count-chip">Public</span></h2>
+        <p className="games-intro" style="margin:0 0 10px">Everyone can see this: redemptions, deliveries and gifts as they happen.</p>
+        <div className="rd-log act-log" ref={(el: HTMLElement) => (box = el)}><div className="empty-state" style="padding:26px 20px">Loading…</div></div>
+      </div>
+    );
+  }
+
+  /** Your own game points (kept on this device): collapsed so the page stays clean. */
+  function historySection(st: RewardState): Node {
+    if (!st.log.length) return null;
+    return (
+      <details className="rd-mine">
+        <summary>Your points history <small>({st.log.length})</small></summary>
+        <div className="rd-log">
+          {st.log.map((l) => (
+            <div className="rd-row">
+              <span>{l.game}</span>
+              <span className="rd-when">{when(l.t)}</span>
+              <b className={l.pts < 0 ? "neg" : "pos"}>{l.pts > 0 ? "+" : ""}{l.pts.toLocaleString()} pts</b>
+            </div>
+          ))}
+        </div>
+      </details>
     );
   }
 
@@ -431,18 +575,9 @@ const Redeem = (() => {
 
       myOrdersSection(),
 
-      <h2 className="section-title" style="margin-top:26px">Recent activity</h2>,
-      st.log.length ? (
-        <div className="rd-log">
-          {st.log.map((l) => (
-            <div className="rd-row">
-              <span>{l.game}</span>
-              <span className="rd-when">{when(l.t)}</span>
-              <b className={l.pts < 0 ? "neg" : "pos"}>{l.pts > 0 ? "+" : ""}{l.pts.toLocaleString()} pts</b>
-            </div>
-          ))}
-        </div>
-      ) : <div className="empty-state" style="padding:30px 20px">Nothing yet. Finish a game round to earn your first points.</div>
+      activitySection(),
+
+      historySection(st)
     );
   }
 
