@@ -89,6 +89,22 @@ Open http://localhost:8000
 - Removed: the "SY 2026 - 2027 · 1 Semester" label and the **My Classes** cards (and `data/classes.json`).
   **Re-run `supabase/schema.sql`** (section 18) to add the banner column, staff messaging and announcement recipients.
 
+- **New-account profile setup**: right after a new user signs up (and confirms their email, if that is on) a full-screen
+  **Set up your profile** page appears and cannot be skipped. It asks for **username** (3-30 characters, must be unique),
+  **profile photo**, **banner** and **bio**, plus an **optional phone number**. Only then can they use the app.
+  The phone number is private (never shown to other users) and can be changed later under **Edit profile**.
+  Accounts that already existed are treated as set up, so nobody is forced through it.
+  The rules are enforced in the database (`complete_profile_setup`), not just in the browser.
+- **Reports**: every profile has a **Report** button and every post has a flag button. The person picks a reason
+  (spam, harassment, inappropriate, impersonation, scam, other) and can add details. The developer and all admins get a
+  bell notification and see the report under **Admin panel → Reports** (red number = reports waiting), with who reported whom,
+  the reason, the reported post's text and how many reports that user has. Reports are private; the reporter is never told who else reported.
+- **Ban (developer only)**: on a report the developer presses **Ban user** (with a reason) or **Dismiss**. Admins can read reports but cannot act on them.
+  The developer can also **Ban / Unban** anyone from **Developer → All accounts**. A banned account is signed out within about 30 seconds,
+  cannot log in again (the login page shows "This account has been banned" and the reason), cannot post, comment, react, message or send friend
+  requests, and loses admin powers if it was an admin. The developer account can't be banned or reported.
+  **Re-run `supabase/schema.sql`** (sections 22 and 23) to add the setup columns, the `reports` table and the ban functions.
+
 ## Files
     index.html / dashboard.html
     js/config.js    Supabase URL + key (you fill this in)
@@ -102,5 +118,14 @@ Open http://localhost:8000
     js/messages.js  1-to-1 chat + unread count
     js/communities.js  community requests, approval, members, community chat
     js/contact.js   Contact staff page (message the developer / admins)
+    js/onboarding.js first-time profile setup screen (username, photo, banner, bio, phone)
+    js/reports.js   report pop-up (users and posts)
     js/dashboard.js dashboard, routing
     supabase/schema.sql   tables, security rules, storage bucket, realtime
+
+- **Timed bans, ban pop-up and appeals**: when the developer bans someone (Developer panel → All accounts → Ban, or Admin panel → Reports → Ban user)
+  they pick a reason and a length: permanent, 1 hour … 30 days, or a custom number of minutes / hours / days. A timed ban lifts itself when the time is up;
+  the developer can **Unban** at any time. A banned person is signed out and sees a **"Your account has been banned"** pop-up on the login page with the
+  reason, when the ban ends, and a box to **message the developer**. That message arrives in the developer's Messages, in the bell, and in
+  **Developer panel → Ban appeals** (Unban / Dismiss). Anyone who opens a banned person's profile sees **"This user has been banned"** and can't message or add them.
+  **Re-run `supabase/schema.sql`** (section 24) to add `profiles.ban_until`, `ban_appeals` and the new ban functions.

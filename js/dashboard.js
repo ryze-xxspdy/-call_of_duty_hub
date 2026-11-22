@@ -3,6 +3,9 @@
   const user = await Auth.requireAuth();
   if (!user) return;
 
+  // Brand-new account? It must finish its profile (username, photo, banner, bio, optional phone) first.
+  if (Onboarding.needed(user)) await Onboarding.run(user);
+
   const $ = (s, r = document) => r.querySelector(s);
   const $$ = (s, r = document) => [...r.querySelectorAll(s)];
   const esc = Utils.escapeHTML;
@@ -13,6 +16,7 @@
   init();
 
   async function init() {
+    watchBan();
     setupChrome();
     await Social.init(user, { onMeChange: paintMe });
     Communities.init(user);
@@ -34,6 +38,14 @@
     // Starts last so an "you're now an admin" pop-up appears over a fully drawn page.
     await Notify.init(user, { onRoleChange: refreshRole });
     await Announce.init(user);
+  }
+
+  /** If the developer bans this account while it is open, sign out right away (checked every 30 s and on focus). */
+  function watchBan() {
+    const check = () => Auth.checkBanned(user.id).then((banned) => { if (banned) window.location.replace("index.html"); });
+    setInterval(check, 30000);
+    window.addEventListener("focus", check);
+    Auth.client.auth.onAuthStateChange((event) => { if (event === "SIGNED_OUT") window.location.replace("index.html"); });
   }
 
   /** Show / hide the Admin + Developer links for the current role. */
@@ -120,7 +132,7 @@
       : `<span class="subnav-item dim">No friends yet</span>`;
   }
 
-  const NOTIF_ICON = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️" };
+  const NOTIF_ICON = { staff_login: "🟢", role: "🛡️", community_request: "📨", community_approved: "✅", community_rejected: "⚠️", community_added: "👥", post_reaction: "👍", post_comment: "💬", comment_reply: "↩️", report: "🚩" };
 
   function renderNotifications() {
     const reqs = Social.incoming().map(({ p }) => `
@@ -197,7 +209,7 @@
   /* ---------- routing ---------- */
   function route() {
     const hash = (location.hash || "#dashboard").slice(1);
-    const view = hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("post-") || hash.startsWith("postr-") ? "post" : hash.startsWith("messages") ? "messages" : hash;
+    const view = hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("post-") || hash.startsWith("postr-") ? "post" : hash.startsWith("messages") ? "messages" : hash.startsWith("admin") ? "admin" : hash;
     const navView = view === "community" ? "communities" : view;
     $("#view").dataset.page = view;
     $$(".nav-item[data-view], .subnav-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === navView));
@@ -207,7 +219,7 @@
       dashboard: renderDashboard,
       calendar: renderCalendar,
       announcements: renderAnnouncements,
-      admin: () => Admin.mount($("#view"), user),
+      admin: () => Admin.mount($("#view"), user, hash === "admin-reports" ? "reports" : null),
       developer: () => Developer.mount($("#view"), user),
       contact: () => Contact.mount($("#view"), user),
       attachments: () => Attachments.mount($("#view"), user),

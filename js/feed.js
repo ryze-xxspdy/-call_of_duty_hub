@@ -180,6 +180,7 @@ const Feed = (() => {
     const name = (prof && prof.name) || p.author_name || "Unknown";
     const link = p.user_id === me.id ? "#profile" : `#user-${esc(p.user_id)}`;
     const canDelete = p.user_id === me.id || Auth.isStaff(me);
+    const canReport = p.user_id !== me.id && !(prof && prof.role === "developer");
     const media = !p.media_url ? "" : p.media_type === "video"
       ? `<video class="post-media" src="${esc(p.media_url)}" controls preload="metadata"></video>`
       : `<img class="post-media" src="${esc(p.media_url)}" alt="Post photo" loading="lazy" />`;
@@ -188,6 +189,8 @@ const Feed = (() => {
         <header>
           <a href="${link}" class="post-who">${Utils.avatar(name, prof && prof.avatar)}</a>
           <div><a href="${link}" class="post-name"><strong>${Utils.nameWithBadge(name, prof && prof.role)}</strong></a><small>${timeAgo(p.created_at)} · <svg class="globe" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c3 3.2 3 14.8 0 18M12 3c-3 3.2-3 14.8 0 18"/></svg></small></div>
+          ${canReport ? `<button class="post-del post-report" type="button" data-report-post="${esc(p.id)}" data-report-user="${esc(p.user_id)}" data-report-name="${esc(name)}" aria-label="Report post" title="Report post">
+            <svg viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></svg></button>` : ""}
           ${canDelete ? `<button class="post-del" data-del="${esc(p.id)}" aria-label="Delete post" title="Delete post">
             <svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg></button>` : ""}
         </header>
@@ -342,6 +345,8 @@ const Feed = (() => {
 
     root.addEventListener("click", async (e) => {
       const t = e.target;
+      const rep = t.closest("[data-report-post]");
+      if (rep) return Reports.open({ userId: rep.dataset.reportUser, userName: rep.dataset.reportName, postId: rep.dataset.reportPost });
       const main = t.closest("[data-react-main]");
       const pick = t.closest("[data-react]");
       const tog = t.closest("[data-comment-toggle]");

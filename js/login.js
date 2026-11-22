@@ -1,7 +1,72 @@
 /* ---------- Login page behaviour ---------- */
 (function () {
+  const esc = Utils.escapeHTML;
+
+  /* ---------- "You have been banned" pop-up (with a box to message the developer) ---------- */
+  function showBanModal(info) {
+    if (document.getElementById("ban-modal")) return;
+    info = info || {};
+    const ends = Auth.banEnds(info.until);
+    const wrap = document.createElement("div");
+    wrap.className = "ban-backdrop";
+    wrap.id = "ban-modal";
+    wrap.innerHTML = `
+      <div class="ban-modal" role="alertdialog" aria-modal="true" aria-labelledby="ban-title" aria-describedby="ban-desc">
+        <div class="ban-icon" aria-hidden="true"><svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg></div>
+        <h3 id="ban-title">Your account has been banned</h3>
+        <p class="ban-lead" id="ban-desc">${ends
+          ? `You can log in again on <b>${esc(ends)}</b>.`
+          : `This ban has no end date. Only the developer can lift it.`}</p>
+        ${info.reason ? `<div class="ban-reason"><small>Reason</small><p>${esc(info.reason)}</p></div>` : ""}
+        <form class="ban-form" novalidate>
+          <label class="ban-label" for="ban-msg">Think this is a mistake? Contact the developer / admin</label>
+          <textarea id="ban-msg" rows="3" maxlength="500" placeholder="Write your message…"></textarea>
+          <p class="ban-feedback" role="alert"></p>
+          <div class="ban-actions">
+            <button type="button" class="ban-btn ghost" data-close>Close</button>
+            <button type="submit" class="ban-btn primary">Send to developer</button>
+          </div>
+        </form>
+      </div>`;
+    document.body.appendChild(wrap);
+
+    const $ = (q) => wrap.querySelector(q);
+    const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    $("[data-close]").addEventListener("click", close);
+    $("#ban-msg").focus();
+
+    $(".ban-form").addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const fb = $(".ban-feedback"), btn = $(".ban-btn.primary"), box = $("#ban-msg");
+      const text = box.value.trim();
+      fb.className = "ban-feedback";
+      if (text.length < 3) { fb.textContent = "Please write a short message."; return box.focus(); }
+      if (!info.email) { fb.textContent = "Type your email on the login form first, then try again."; return; }
+      btn.disabled = true; btn.textContent = "Sending…"; fb.textContent = "";
+      try {
+        await Auth.sendAppeal(info.email, text);
+        box.value = ""; box.disabled = true;
+        fb.className = "ban-feedback ok";
+        fb.textContent = "Message sent. The developer will see it.";
+        btn.textContent = "Sent ✓";
+      } catch (ex) {
+        fb.textContent = ex.message;
+        btn.disabled = false; btn.textContent = "Send to developer";
+      }
+    });
+  }
+
   // Already signed in? Go straight to the dashboard.
-  Auth.currentUser().then((u) => { if (u) window.location.replace("dashboard.html"); });
+  // (A banned account with a leftover session is signed out and shown the ban pop-up.)
+  const leftover = Auth.takeBanNotice();            // set when the account was banned while it was open
+  if (leftover) showBanModal(leftover);
+  Auth.currentUser().then((u) => {
+    if (u) return window.location.replace("dashboard.html");
+    const n = Auth.takeBanNotice();                 // set when a leftover session turned out to be banned
+    if (n) showBanModal(n);
+  });
   if (!Auth.configured) {
     document.getElementById("login-error").textContent = "Supabase isn't set up yet: add your URL and key in js/config.js.";
   }
@@ -51,7 +116,8 @@
       await Auth.login(email, password);
       window.location.href = "dashboard.html";
     } catch (ex) {
-      err.textContent = ex.message;
+      if (ex.ban) { err.textContent = ""; showBanModal(ex.ban); }
+      else err.textContent = ex.message;
     }
   });
 

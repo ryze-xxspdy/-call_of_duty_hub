@@ -158,6 +158,8 @@ const Social = (() => {
           <input class="text-input" id="pf-name" maxlength="40" autocomplete="nickname" value="${esc(me.name)}" />
           <label class="field-label" for="pf-bio">Bio <span class="dim" id="bio-count"></span></label>
           <textarea class="text-input" id="pf-bio" rows="4" maxlength="300" placeholder="Tell people a little about you…">${esc(me.bio || "")}</textarea>
+          <label class="field-label" for="pf-phone">Phone number <span class="dim">(optional · private)</span></label>
+          <input class="text-input" id="pf-phone" type="tel" maxlength="20" autocomplete="tel" placeholder="+63 912 345 6789" value="${esc(me.phone || "")}" />
           <label class="field-label" for="pf-email">Email</label>
           <input class="text-input" id="pf-email" value="${esc(me.email || "")}" disabled />
           <p class="hint">Other people only see your photo, username and bio. Your email stays private.</p>
@@ -234,7 +236,9 @@ const Social = (() => {
       e.preventDefault();
       const name = $("#pf-name").value.trim();
       const bio = $("#pf-bio").value.trim();
+      const phone = $("#pf-phone").value.trim();
       if (!name) return Utils.toast("Username can't be empty.");
+      if (phone && !/^\+?[0-9 ()-]{7,20}$/.test(phone)) return Utils.toast("Enter a valid phone number (digits, spaces, + ( ) -), or leave it empty.");
       const btn = $("#pf-save");
       btn.disabled = true; btn.textContent = "Saving…";
       const uploaded = [];      // new files, removed again if the save fails
@@ -258,16 +262,19 @@ const Social = (() => {
         else if (removed) avatar = null;
         if (bannerFile) banner = await upload(bannerFile, "banner-");
         else if (bannerRemoved) banner = null;
-        try { await saveRow({ name, bio, avatar, banner }); }
+        const fields = { name, bio, avatar, banner };
+        if ((phone || null) !== (me.phone || null)) fields.phone = phone || null;   // only sent when it changed
+        try { await saveRow(fields); }
         catch (err) {
           if (/banner/i.test(err.message || "")) throw new Error("Banner isn't set up yet. Re-run supabase/schema.sql (section 18) in Supabase.");
+          if (/phone/i.test(err.message || "")) throw new Error("Phone number isn't set up yet. Re-run supabase/schema.sql (section 22) in Supabase.");
           throw err;
         }
         const stale = [];
         if (oldPath && avatar !== me.avatar) stale.push(oldPath);
         if (oldBanner && banner !== me.banner) stale.push(oldBanner);
         if (stale.length) db().storage.from(AVATAR_BUCKET).remove(stale).catch(() => {});
-        me.name = name; me.bio = bio; me.avatar = avatar; me.banner = banner;
+        me.name = name; me.bio = bio; me.avatar = avatar; me.banner = banner; me.phone = phone || null;
         people.set(me.id, { id: me.id, name, bio, avatar, banner, role: me.role, created_at: me.created_at });
         if (presence) presence.track({ name, avatar });
         onMeChanged();
@@ -291,6 +298,27 @@ const Social = (() => {
     return decodeURIComponent(url.split(`/${AVATAR_BUCKET}/`)[1].split("?")[0]);
   }
 
+  /** Pop-up shown when you open a profile that has been banned. */
+  function showBannedPopup(name) {
+    if (document.getElementById("banned-user-modal")) return;
+    const wrap = document.createElement("div");
+    wrap.className = "modal-backdrop";
+    wrap.id = "banned-user-modal";
+    wrap.innerHTML = `
+      <div class="modal" role="alertdialog" aria-modal="true" aria-labelledby="bu-title" style="text-align:center">
+        <h3 id="bu-title">User has been banned</h3>
+        <p><b>${esc(name || "This user")}</b> has been banned by the developer and can't use ConfessHub right now.</p>
+        <div class="modal-actions" style="justify-content:center"><button class="btn primary" type="button" id="bu-ok">OK</button></div>
+      </div>`;
+    document.body.appendChild(wrap);
+    const close = () => { wrap.remove(); document.removeEventListener("keydown", onKey); };
+    const onKey = (e) => { if (e.key === "Escape") close(); };
+    document.addEventListener("keydown", onKey);
+    wrap.addEventListener("mousedown", (e) => { if (e.target === wrap) close(); });
+    wrap.querySelector("#bu-ok").addEventListener("click", close);
+    wrap.querySelector("#bu-ok").focus();
+  }
+
   /* ---------- Someone else's profile ---------- */
   async function mountUser(el, id) {
     if (id === me.id) { location.hash = "#profile"; return; }
@@ -298,7 +326,10 @@ const Social = (() => {
     el.innerHTML = `<div class="empty">Loading profile…</div>`;
 
     // Ask the database directly so a real error is never mistaken for "no such user".
-    const { data, error } = await db().from("public_profiles").select("id,name,avatar,banner,bio,role,created_at").eq("id", id).maybeSingle();
+    let { data, error } = await db().from("public_profiles").select("id,name,avatar,banner,bio,role,created_at,is_banned").eq("id", id).maybeSingle();
+    if (error && /is_banned/.test(error.message)) {      // schema section 24 not run yet: load without the ban flag
+      ({ data, error } = await db().from("public_profiles").select("id,name,avatar,banner,bio,role,created_at").eq("id", id).maybeSingle());
+    }
     if (token !== viewToken) return;
 
     let p = data;
@@ -325,12 +356,15 @@ const Social = (() => {
     }
 
     const joined = p.created_at ? new Date(p.created_at) : null;
+    const banned = !!p.is_banned;
+    if (banned) showBannedPopup(p.name);
     const draw = () => {
       if (token !== viewToken) return false;
       const isFriend = relation(id).state === "friends";
       el.innerHTML = `
         <p class="today"><a href="#dashboard" style="color:var(--accent)">← Back</a></p>
-        <div class="profile-card">
+        ${banned ? `<div class="ban-banner" role="alert"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M5.6 5.6l12.8 12.8"/></svg>This user has been banned.</div>` : ""}
+        <div class="profile-card ${banned ? "is-banned" : ""}">
         ${Utils.banner(p.banner)}
         <div class="profile-head">
           ${Utils.avatar(p.name, p.avatar, "xl")}
@@ -340,11 +374,13 @@ const Social = (() => {
             <p class="bio">${p.bio ? esc(p.bio) : '<span class="dim">No bio yet.</span>'}</p>
             <small class="dim">${[joined ? `Joined ${Utils.formatShortDate(joined)}, ${joined.getFullYear()}` : "", isOnline(id) ? '<span class="online-text">● Online now</span>' : ""].filter(Boolean).join(" · ")}</small>
           </div>
-          <div class="profile-actions"><a class="btn-sm primary" href="#messages-${esc(id)}">Message</a> ${actionsHTML(id)}</div>
+          <div class="profile-actions">${banned ? "" : `<a class="btn-sm primary" href="#messages-${esc(id)}">Message</a> ${actionsHTML(id)}`}${p.role === "developer" || banned ? "" : `<button class="btn-sm ghost danger" type="button" data-report-user title="Report this user">Report</button>`}</div>
         </div>
         </div>
         <div id="profile-posts"></div>`;
       bindActions(el);
+      const reportBtn = el.querySelector("[data-report-user]");
+      if (reportBtn) reportBtn.addEventListener("click", () => Reports.open({ userId: id, userName: p.name }));
       const box = el.querySelector("#profile-posts");
       if (isFriend) {
         box.innerHTML = `<h2 class="section-title">Posts by ${esc(p.name)}</h2><div id="profile-feed"></div>`;

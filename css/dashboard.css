@@ -1260,3 +1260,76 @@ button.btn-ctl { font: inherit; cursor: pointer; }
 
 /* ----- Community searches: same small size ----- */
 .search-input.com-search { width: 100%; max-width: 280px; height: 36px; padding: 0 12px; font-size: 13px; border-radius: 8px; margin-bottom: 14px; }
+
+/* ----- First-time profile setup (new accounts) ----- */
+body.setup-open { overflow: hidden; }
+.form-error { min-height: 18px; margin: 12px 0 0; font-size: 12.5px; color: #ff8a98; }
+.req { color: #ff7a7a; }
+.setup-backdrop { position: fixed; inset: 0; z-index: 300; overflow-y: auto; background: var(--bg); padding: 24px 16px 40px; display: flex; justify-content: center; align-items: flex-start; }
+.setup-card { width: 100%; max-width: 560px; margin: auto; padding: 24px; border-radius: 14px; background: var(--card); border: 1px solid var(--line); animation: rise .25s ease both; }
+.setup-head h1 { margin: 0 0 6px; font-size: 22px; }
+.setup-head p { margin: 0 0 18px; font-size: 13.5px; color: var(--muted); line-height: 1.5; }
+.setup-visual { position: relative; margin-bottom: 52px; }
+.setup-visual .banner { margin: 0; border-radius: 10px; }
+.setup-avatar-slot { position: absolute; left: 18px; bottom: -44px; border-radius: 50%; border: 4px solid var(--card); background: var(--card); line-height: 0; }
+.setup-pickers { display: flex; flex-wrap: wrap; gap: 8px; }
+.setup-pickers .btn-sm { border: 1px solid var(--line); }
+.setup-note { display: block; margin-top: 8px; }
+.setup-fields { margin-top: 18px; }
+.setup-fields .field-label { margin-top: 16px; }
+.setup-fields .field-label:first-child { margin-top: 0; }
+.setup-hint { display: block; margin-top: 6px; font-size: 11.5px; color: var(--muted); }
+.setup-hint.ok { color: var(--ok); }
+.setup-hint.bad { color: #ff7a7a; }
+.setup-submit { width: 100%; height: 44px; margin-top: 8px; font-size: 14px; }
+.setup-submit:disabled { opacity: .6; cursor: default; }
+.setup-logout { display: block; margin: 14px auto 0; color: var(--muted); }
+@media (max-width: 600px) {
+  .setup-backdrop { padding: 0; background: var(--card); }
+  .setup-card { border: 0; border-radius: 0; min-height: 100%; max-width: none; padding: 18px 16px 28px; }
+  .setup-head h1 { font-size: 20px; }
+  .setup-fields .text-input { font-size: 16px; }
+}
+
+/* ----- Reports ----- */
+.report-modal { max-width: 440px; }
+.report-reasons { display: grid; gap: 6px; margin: 4px 0 16px; }
+.report-reason { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--field); font-size: 13.5px; cursor: pointer; }
+.report-reason:has(input:checked) { border-color: var(--accent); }
+.report-reason input { width: auto; height: auto; margin: 0; accent-color: var(--accent); }
+.report-modal .field-label { margin-top: 0; }
+.report-modal .modal-actions .btn { display: inline-flex; align-items: center; }
+.post-report:hover { color: #ffb446; }
+
+.report-card { padding: 14px 16px; margin-bottom: 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--line); }
+.report-card.open { border-left: 3px solid #ef4444; }
+.report-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.report-top .person-main { flex: 1; min-width: 0; }
+.report-reason-chip { padding: 4px 10px; border-radius: 999px; background: rgba(255,122,122,.16); color: #ff7a7a; font-size: 11.5px; font-weight: 700; white-space: nowrap; }
+.report-meta { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.report-details { margin: 8px 0 0; padding: 8px 12px; border-radius: 8px; background: var(--field); font-size: 13px; line-height: 1.45; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-post { margin-top: 10px; padding: 8px 12px; border-radius: 8px; border: 1px dashed var(--line); }
+.report-post small { color: var(--muted); font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.report-post p { margin: 4px 0 6px; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.report-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+.btn-sm.danger-fill { background: #d93a3a; border-color: transparent; color: #fff; }
+.btn-sm.danger-fill:hover { filter: brightness(1.08); }
+
+/* ---------- Ban dialog + ban appeals + banned profile ---------- */
+.ban-dialog { max-width: 420px; }
+.ban-dialog .field-label { display: block; margin: 12px 0 6px; font-size: 12.5px; font-weight: 600; color: var(--text); }
+.ban-dialog .sel { width: 100%; }
+.ban-dialog .hidden { display: none; }
+.bd-custom { display: flex; gap: 8px; margin-top: 8px; }
+.bd-custom input { width: 90px; flex: none; }
+.bd-custom .sel { flex: 1; }
+.ban-dialog .bd-until { margin: 10px 0 0; font-size: 12px; color: var(--muted); }
+.ban-dialog .form-error { margin: 6px 0 0; min-height: 0; font-size: 12.5px; color: #ff7a7a; }
+.btn.danger-fill { background: #e5484d; color: #fff; }
+.appeal-card { padding: 12px 14px; margin-bottom: 10px; border-radius: 10px; background: var(--field); }
+.appeal-top { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; }
+.appeal-card .appeal-msg { margin: 8px 0 10px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.appeal-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.ban-banner { display: flex; align-items: center; gap: 10px; margin: 0 0 14px; padding: 12px 14px; border-radius: 10px; background: rgba(229,72,77,.12); border: 1px solid rgba(229,72,77,.4); color: #ff8a8d; font-size: 13.5px; font-weight: 600; }
+.ban-banner svg { width: 20px; height: 20px; flex: none; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.profile-card.is-banned .profile-info { opacity: .7; }

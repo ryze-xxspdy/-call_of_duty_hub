@@ -1178,3 +1178,456 @@ grant execute on function public.regenerate_community_code(uuid) to authenticate
 -- =====================================================================
 alter table public.profiles alter column email set default '';
 alter table public.profiles alter column email drop not null;
+
+
+-- =====================================================================
+-- 22) New-account profile setup  -- safe to re-run
+-- =====================================================================
+-- A brand-new account must fill in: username, profile photo, banner and bio (phone number is optional)
+-- before it can use the app. Existing accounts are treated as already set up (done once, when the column is added).
+alter table public.profiles add column if not exists phone text;
+alter table public.profiles drop constraint if exists profiles_phone_fmt;
+alter table public.profiles add constraint profiles_phone_fmt
+  check (phone is null or phone ~ '^\+?[0-9 ()-]{7,20}$') not valid;
+
+do $$
+begin
+  if not exists (select 1 from information_schema.columns
+                 where table_schema = 'public' and table_name = 'profiles' and column_name = 'setup_complete') then
+    alter table public.profiles add column setup_complete boolean not null default false;
+    update public.profiles set setup_complete = true;      -- everyone who already exists
+  end if;
+end $$;
+
+-- Users can edit their own phone later from Edit profile. setup_complete can ONLY be set by the function below.
+grant update (name, avatar, bio, banner, phone) on public.profiles to authenticated;
+
+-- Is this username free? (ignores your own current one)
+create or replace function public.username_available(p_name text)
+returns boolean language sql security definer stable set search_path = public as $$
+  select not exists (
+    select 1 from public.profiles
+    where lower(trim(name)) = lower(trim(coalesce(p_name, ''))) and id <> auth.uid()
+  );
+$$;
+
+-- Finish the first-time setup. Everything is validated here, not just in the browser.
+create or replace function public.complete_profile_setup(p_name text, p_phone text, p_avatar text, p_banner text, p_bio text)
+returns void language plpgsql security definer set search_path = public as $$
+declare
+  n  text := trim(coalesce(p_name, ''));
+  ph text := nullif(trim(coalesce(p_phone, '')), '');
+  b  text := trim(coalesce(p_bio, ''));
+  me text := auth.uid()::text;
+begin
+  if auth.uid() is null then raise exception 'Not signed in'; end if;
+  if n !~ '^[A-Za-z0-9][A-Za-z0-9 ._-]{2,29}$' then
+    raise exception 'Username must be 3-30 characters: letters, numbers, spaces, dot, dash or underscore.';
+  end if;
+  if exists (select 1 from public.profiles where lower(trim(name)) = lower(n) and id <> auth.uid()) then
+    raise exception 'That username is already taken.';
+  end if;
+  if ph is not null and ph !~ '^\+?[0-9 ()-]{7,20}$' then
+    raise exception 'Enter a valid phone number, or leave it empty.';
+  end if;
+  if p_avatar is null or p_avatar !~ '^https://' or position(('/avatars/' || me || '/') in p_avatar) = 0 then
+    raise exception 'Please add a profile photo.';
+  end if;
+  if p_banner is null or p_banner !~ '^https://' or position(('/avatars/' || me || '/') in p_banner) = 0 then
+    raise exception 'Please add a banner.';
+  end if;
+  if char_length(b) < 1 or char_length(b) > 300 then
+    raise exception 'Please write a short bio (up to 300 characters).';
+  end if;
+  update public.profiles
+     set name = n, phone = ph, avatar = p_avatar, banner = p_banner, bio = b, setup_complete = true
+   where id = auth.uid();
+  if not found then raise exception 'Profile not found'; end if;
+end $$;
+
+revoke all on function public.username_available(text) from public, anon;
+revoke all on function public.complete_profile_setup(text, text, text, text, text) from public, anon;
+grant execute on function public.username_available(text) to authenticated;
+grant execute on function public.complete_profile_setup(text, text, text, text, text) to authenticated;
+
+
+-- =====================================================================
+-- 23) Reports + bans  -- safe to re-run
+-- =====================================================================
+-- * Anyone signed in can report another user (optionally pointing at one of their posts).
+-- * Admins and the developer can SEE every report (Admin panel > Reports).
+-- * Only the DEVELOPER can act on a report: ban the user, or dismiss the report.
+-- * A banned user is signed out, cannot log in again, and cannot write anything new.
+alter table public.profiles add column if not exists banned_at timestamptz;
+alter table public.profiles add column if not exists ban_reason text;
+
+-- A banned admin loses admin powers straight away (even if their login token is still valid for a while).
+create or replace function public.is_admin()
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.profiles
+                 where id = auth.uid() and role in ('admin','developer') and banned_at is null);
+$$;
+
+create table if not exists public.reports (
+  id            uuid primary key default gen_random_uuid(),
+  reporter_id   uuid not null references public.profiles(id) on delete cascade,
+  reported_id   uuid not null references public.profiles(id) on delete cascade,
+  post_id       uuid references public.posts(id) on delete set null,
+  post_snapshot text,                                  -- the reported post's text, kept even if it is deleted
+  reason        text not null,
+  details       text not null default '',
+  status        text not null default 'open',          -- open | banned | dismissed
+  note          text not null default '',              -- developer's note when closing the report
+  handled_by    uuid references public.profiles(id) on delete set null,
+  handled_at    timestamptz,
+  created_at    timestamptz not null default now(),
+  constraint reports_reason_chk  check (reason in ('spam','harassment','inappropriate','impersonation','scam','other')),
+  constraint reports_status_chk  check (status in ('open','banned','dismissed')),
+  constraint reports_details_len check (char_length(details) <= 500),
+  constraint reports_not_self    check (reporter_id <> reported_id)
+);
+create index if not exists reports_status_idx   on public.reports (status, created_at desc);
+create index if not exists reports_reported_idx on public.reports (reported_id);
+-- the same person can't file the same open report twice
+create unique index if not exists reports_one_open
+  on public.reports (reporter_id, reported_id, coalesce(post_id, '00000000-0000-0000-0000-000000000000'::uuid))
+  where status = 'open';
+
+alter table public.reports enable row level security;
+drop policy if exists "reports read" on public.reports;
+create policy "reports read" on public.reports for select to authenticated
+  using (reporter_id = auth.uid() or public.is_admin());
+drop policy if exists "reports insert" on public.reports;
+create policy "reports insert" on public.reports for insert to authenticated
+  with check (reporter_id = auth.uid());
+-- No update / delete from the browser: closing a report goes through review_report() below.
+revoke insert, update, delete on public.reports from anon, authenticated;
+grant insert (reported_id, post_id, reason, details) on public.reports to authenticated;
+
+-- Fill in the trusted fields so the browser can't fake them, and stop report spam.
+create or replace function public.stamp_report()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare target_role text; target_ban timestamptz; owner uuid; txt text;
+begin
+  new.reporter_id := auth.uid();
+  new.status := 'open'; new.note := ''; new.handled_by := null; new.handled_at := null;
+  select role, banned_at into target_role, target_ban from public.profiles where id = new.reported_id;
+  if target_role is null then raise exception 'That user no longer exists.'; end if;
+  if target_role = 'developer' then raise exception 'This account cannot be reported.'; end if;
+  if target_ban is not null then raise exception 'That user is already banned.'; end if;
+  if new.post_id is not null then
+    select user_id, body into owner, txt from public.posts where id = new.post_id;
+    if owner is null or owner <> new.reported_id then raise exception 'That post does not belong to this user.'; end if;
+    new.post_snapshot := left(coalesce(txt, ''), 500);
+  end if;
+  if (select count(*) from public.reports where reporter_id = new.reporter_id and status = 'open') >= 10 then
+    raise exception 'You already have 10 reports waiting for review. Please wait for the staff to look at them.';
+  end if;
+  new.details := left(trim(coalesce(new.details, '')), 500);
+  return new;
+end $$;
+drop trigger if exists reports_stamp on public.reports;
+create trigger reports_stamp before insert on public.reports
+  for each row execute function public.stamp_report();
+
+-- Tell the developer and every admin (bell) when a report comes in.
+create or replace function public.notify_new_report()
+returns trigger language plpgsql security definer set search_path = public as $$
+declare rname text; tname text;
+begin
+  select name into rname from public.profiles where id = new.reporter_id;
+  select name into tname from public.profiles where id = new.reported_id;
+  insert into public.notifications (user_id, kind, title, body, link)
+  select p.id, 'report', 'New report',
+         coalesce(rname, 'Someone') || ' reported ' || coalesce(tname, 'a user') || ' (' || new.reason || ').',
+         '#admin-reports'
+  from public.profiles p
+  where p.role in ('admin','developer') and p.banned_at is null and p.id <> new.reporter_id;
+  return new;
+end $$;
+drop trigger if exists reports_notify on public.reports;
+create trigger reports_notify after insert on public.reports
+  for each row execute function public.notify_new_report();
+
+-- Developer only: ban an account. They are signed out everywhere and can't log in again.
+create or replace function public.ban_user(target uuid, reason text default '')
+returns void language plpgsql security definer set search_path = public, auth as $$
+declare cur text;
+begin
+  if not public.is_developer() then raise exception 'Developer access required'; end if;
+  select role into cur from public.profiles where id = target;
+  if cur is null then raise exception 'User not found'; end if;
+  if cur = 'developer' then raise exception 'The developer account cannot be banned'; end if;
+  update public.profiles
+     set banned_at = now(), ban_reason = left(trim(coalesce(reason, '')), 300)
+   where id = target;
+  update auth.users set banned_until = now() + interval '100 years' where id = target;   -- blocks login + token refresh
+  begin delete from auth.sessions where user_id = target; exception when others then null; end;  -- sign out now
+  update public.reports
+     set status = 'banned', handled_by = auth.uid(), handled_at = now()
+   where reported_id = target and status = 'open';
+end $$;
+
+create or replace function public.unban_user(target uuid)
+returns void language plpgsql security definer set search_path = public, auth as $$
+begin
+  if not public.is_developer() then raise exception 'Developer access required'; end if;
+  update public.profiles set banned_at = null, ban_reason = null where id = target;
+  update auth.users set banned_until = null where id = target;
+end $$;
+
+-- Developer only: close a report by banning the user or dismissing it.
+create or replace function public.review_report(rid uuid, act text, note text default '')
+returns void language plpgsql security definer set search_path = public as $$
+declare r public.reports%rowtype; n text := left(trim(coalesce(note, '')), 300);
+begin
+  if not public.is_developer() then raise exception 'Only the developer can act on reports'; end if;
+  select * into r from public.reports where id = rid;
+  if r.id is null then raise exception 'Report not found'; end if;
+  if r.status <> 'open' then raise exception 'This report was already handled'; end if;
+  if act = 'ban' then
+    perform public.ban_user(r.reported_id, coalesce(nullif(n, ''), 'Banned after a report (' || r.reason || ')'));
+    update public.reports set note = n where id = rid;
+  elsif act = 'dismiss' then
+    update public.reports set status = 'dismissed', note = n, handled_by = auth.uid(), handled_at = now() where id = rid;
+  else
+    raise exception 'Unknown action';
+  end if;
+end $$;
+
+revoke all on function public.ban_user(uuid, text)            from public, anon;
+revoke all on function public.unban_user(uuid)                from public, anon;
+revoke all on function public.review_report(uuid, text, text) from public, anon;
+grant execute on function public.ban_user(uuid, text)            to authenticated;
+grant execute on function public.unban_user(uuid)                to authenticated;
+grant execute on function public.review_report(uuid, text, text) to authenticated;
+
+-- A banned account can't write anything new, even if its login token is still valid for a few minutes.
+create or replace function public.reject_if_banned()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is not null
+     and exists (select 1 from public.profiles where id = auth.uid() and banned_at is not null) then
+    raise exception 'Your account has been banned.';
+  end if;
+  return new;
+end $$;
+
+do $$
+declare t text;
+begin
+  foreach t in array array['posts','post_comments','post_reactions','messages','community_messages',
+                           'friendships','community_requests','reports'] loop
+    if to_regclass('public.' || t) is not null then
+      execute format('drop trigger if exists %I on public.%I', t || '_reject_banned', t);
+      execute format('create trigger %I before insert on public.%I for each row execute function public.reject_if_banned()',
+                     t || '_reject_banned', t);
+    end if;
+  end loop;
+end $$;
+
+-- Live updates for the Reports tab
+do $$ begin
+  begin alter publication supabase_realtime add table public.reports; exception when duplicate_object then null; end;
+end $$;
+
+
+-- =====================================================================
+-- 24) Timed bans, ban pop-up + "contact developer", banned notice on profiles  -- safe to re-run
+-- =====================================================================
+-- * The developer picks how long a ban lasts (minutes / hours / days) or makes it permanent,
+--   and can unban at any time. A timed ban lifts itself when the time is up.
+-- * A banned person sees a pop-up on the login page with the reason, when it ends, and a box
+--   to message the developer. The message lands in the developer's Messages inbox, in the bell,
+--   and in Developer panel > Ban appeals.
+-- * Everybody else who opens a banned person's profile is told "This user has been banned".
+alter table public.profiles add column if not exists ban_until timestamptz;   -- null + banned_at set = permanent
+
+-- Is this person banned RIGHT NOW? (a timed ban that has run out no longer counts)
+create or replace function public.is_banned_now(uid uuid)
+returns boolean language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.profiles
+                 where id = uid and banned_at is not null and (ban_until is null or ban_until > now()));
+$$;
+grant execute on function public.is_banned_now(uuid) to authenticated;
+
+create or replace function public.is_admin()
+returns boolean language sql security definer stable set search_path = public as $$
+  select exists (select 1 from public.profiles
+                 where id = auth.uid() and role in ('admin','developer'))
+     and not public.is_banned_now(auth.uid());
+$$;
+
+create or replace function public.reject_if_banned()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if auth.uid() is not null and public.is_banned_now(auth.uid()) then
+    raise exception 'Your account has been banned.';
+  end if;
+  return new;
+end $$;
+
+-- Clear every timed ban whose time is up (login is allowed again the moment the time passes;
+-- this just tidies the profile). Called by the app, and every minute by pg_cron when it is available.
+create or replace function public.lift_expired_bans()
+returns void language plpgsql security definer set search_path = public, auth as $$
+begin
+  update auth.users u set banned_until = null
+    from public.profiles p
+   where p.id = u.id and p.banned_at is not null and p.ban_until is not null and p.ban_until <= now();
+  update public.profiles set banned_at = null, ban_reason = null, ban_until = null
+   where banned_at is not null and ban_until is not null and ban_until <= now();
+end $$;
+grant execute on function public.lift_expired_bans() to anon, authenticated;
+
+do $$ begin
+  begin
+    create extension if not exists pg_cron;
+    perform cron.unschedule('lift-expired-bans');
+  exception when others then null; end;
+  begin
+    perform cron.schedule('lift-expired-bans', '* * * * *', 'select public.lift_expired_bans()');
+  exception when others then null; end;   -- no pg_cron on this project: the app lifts bans at login instead
+end $$;
+
+-- Ban appeals: what a banned person writes to the developer.
+create table if not exists public.ban_appeals (
+  id         uuid primary key default gen_random_uuid(),
+  user_id    uuid not null references public.profiles(id) on delete cascade,
+  message    text not null check (char_length(message) between 3 and 500),
+  status     text not null default 'open' check (status in ('open','closed')),
+  created_at timestamptz not null default now(),
+  handled_at timestamptz
+);
+create index if not exists ban_appeals_idx on public.ban_appeals (status, created_at desc);
+alter table public.ban_appeals enable row level security;
+drop policy if exists "appeals read" on public.ban_appeals;
+create policy "appeals read" on public.ban_appeals for select to authenticated using (public.is_developer());
+revoke all on public.ban_appeals from anon, authenticated;
+grant select on public.ban_appeals to authenticated;
+
+-- Replace the old ban / review functions with versions that take a duration.
+drop function if exists public.ban_user(uuid, text);
+drop function if exists public.review_report(uuid, text, text);
+
+-- Developer only. duration_minutes = null means permanent.
+create or replace function public.ban_user(target uuid, reason text default '', duration_minutes int default null)
+returns void language plpgsql security definer set search_path = public, auth as $$
+declare cur text; v_until timestamptz;
+begin
+  if not public.is_developer() then raise exception 'Developer access required'; end if;
+  select role into cur from public.profiles where id = target;
+  if cur is null then raise exception 'User not found'; end if;
+  if cur = 'developer' then raise exception 'The developer account cannot be banned'; end if;
+  if duration_minutes is not null then
+    if duration_minutes < 1 or duration_minutes > 5256000 then raise exception 'Ban length must be between 1 minute and 10 years'; end if;
+    v_until := now() + make_interval(mins => duration_minutes);
+  end if;
+  update public.profiles
+     set banned_at = now(), ban_until = v_until, ban_reason = left(trim(coalesce(reason, '')), 300)
+   where id = target;
+  update auth.users set banned_until = coalesce(v_until, now() + interval '100 years') where id = target;  -- blocks login + token refresh
+  begin delete from auth.sessions where user_id = target; exception when others then null; end;            -- sign out now
+  update public.reports
+     set status = 'banned', handled_by = auth.uid(), handled_at = now()
+   where reported_id = target and status = 'open';
+end $$;
+
+create or replace function public.unban_user(target uuid)
+returns void language plpgsql security definer set search_path = public, auth as $$
+begin
+  if not public.is_developer() then raise exception 'Developer access required'; end if;
+  update public.profiles set banned_at = null, ban_reason = null, ban_until = null where id = target;
+  update auth.users set banned_until = null where id = target;
+  update public.ban_appeals set status = 'closed', handled_at = now() where user_id = target and status = 'open';
+end $$;
+
+create or replace function public.review_report(rid uuid, act text, note text default '', duration_minutes int default null)
+returns void language plpgsql security definer set search_path = public as $$
+declare r public.reports%rowtype; n text := left(trim(coalesce(note, '')), 300);
+begin
+  if not public.is_developer() then raise exception 'Only the developer can act on reports'; end if;
+  select * into r from public.reports where id = rid;
+  if r.id is null then raise exception 'Report not found'; end if;
+  if r.status <> 'open' then raise exception 'This report was already handled'; end if;
+  if act = 'ban' then
+    perform public.ban_user(r.reported_id, coalesce(nullif(n, ''), 'Banned after a report (' || r.reason || ')'), duration_minutes);
+    update public.reports set note = n where id = rid;
+  elsif act = 'dismiss' then
+    update public.reports set status = 'dismissed', note = n, handled_by = auth.uid(), handled_at = now() where id = rid;
+  else
+    raise exception 'Unknown action';
+  end if;
+end $$;
+
+-- Developer only: close an appeal without unbanning.
+create or replace function public.close_ban_appeal(aid uuid)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if not public.is_developer() then raise exception 'Developer access required'; end if;
+  update public.ban_appeals set status = 'closed', handled_at = now() where id = aid;
+end $$;
+
+revoke all on function public.ban_user(uuid, text, int)               from public, anon;
+revoke all on function public.unban_user(uuid)                        from public, anon;
+revoke all on function public.review_report(uuid, text, text, int)    from public, anon;
+revoke all on function public.close_ban_appeal(uuid)                  from public, anon;
+grant execute on function public.ban_user(uuid, text, int)            to authenticated;
+grant execute on function public.unban_user(uuid)                     to authenticated;
+grant execute on function public.review_report(uuid, text, text, int) to authenticated;
+grant execute on function public.close_ban_appeal(uuid)               to authenticated;
+
+-- Login page (nobody is signed in yet): is this email banned, why, and until when?
+create or replace function public.ban_status(p_email text)
+returns table (banned boolean, reason text, ban_until timestamptz)
+language plpgsql security definer set search_path = public as $$
+begin
+  perform public.lift_expired_bans();
+  return query
+    select true, coalesce(p.ban_reason, ''), p.ban_until
+      from public.profiles p
+     where lower(p.email) = lower(trim(coalesce(p_email, ''))) and p.banned_at is not null
+     limit 1;
+  if not found then return query select false, ''::text, null::timestamptz; end if;
+end $$;
+revoke all on function public.ban_status(text) from public;
+grant execute on function public.ban_status(text) to anon, authenticated;
+
+-- A banned person writes to the developer. Works while signed out. Anything for an email that is
+-- not currently banned is silently ignored, so this can't be used to find out who has an account.
+create or replace function public.submit_ban_appeal(p_email text, p_message text)
+returns void language plpgsql security definer set search_path = public as $$
+declare uid uuid; uname text; msg text := left(trim(coalesce(p_message, '')), 500); dev record;
+begin
+  if char_length(msg) < 3 then raise exception 'Please write a short message.'; end if;
+  select id, name into uid, uname from public.profiles
+   where lower(email) = lower(trim(coalesce(p_email, ''))) and public.is_banned_now(id) limit 1;
+  if uid is null then return; end if;
+  if exists (select 1 from public.ban_appeals where user_id = uid and created_at > now() - interval '5 minutes') then
+    raise exception 'You already sent a message a moment ago. Please wait a few minutes before sending another.';
+  end if;
+  if (select count(*) from public.ban_appeals where user_id = uid and status = 'open') >= 5 then
+    raise exception 'The developer already has several messages from you. Please wait for a reply.';
+  end if;
+  insert into public.ban_appeals (user_id, message) values (uid, msg);
+  for dev in select id from public.profiles where role = 'developer' loop
+    insert into public.messages (sender_id, recipient_id, body)
+      values (uid, dev.id, left('🚫 Ban appeal: ' || msg, 1000));
+    insert into public.notifications (user_id, kind, title, body, link)
+      values (dev.id, 'ban_appeal', 'Ban appeal from ' || coalesce(uname, 'a banned user'), left(msg, 200), '#developer');
+  end loop;
+end $$;
+revoke all on function public.submit_ban_appeal(text, text) from public;
+grant execute on function public.submit_ban_appeal(text, text) to anon, authenticated;
+
+-- Others can see that someone is banned (new column goes LAST so the view can be replaced in place).
+create or replace view public.public_profiles as
+  select id, name, avatar, bio, role, created_at, banner,
+         public.is_banned_now(id) as is_banned
+    from public.profiles;
+revoke all on public.public_profiles from anon, authenticated;
+grant select on public.public_profiles to authenticated;
+
+do $$ begin
+  begin alter publication supabase_realtime add table public.ban_appeals; exception when duplicate_object then null; end;
+end $$;
