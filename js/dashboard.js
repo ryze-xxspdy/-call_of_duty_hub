@@ -232,7 +232,7 @@
             location.replace("#games");
             return;
         } // the Calendar page was replaced by Games
-        const view = hash.startsWith("games") ? "games" : hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("post-") || hash.startsWith("postr-") ? "post" : hash.startsWith("messages") ? "messages" : hash.startsWith("admin") ? "admin" : hash;
+        const view = hash.startsWith("games") ? "games" : hash.startsWith("user-") ? "user" : hash.startsWith("community-") ? "community" : hash.startsWith("post-") || hash.startsWith("postr-") ? "post" : hash.startsWith("messages") ? "messages" : hash.startsWith("store") ? "store" : hash.startsWith("admin") ? "admin" : hash;
         const navView = view === "community" ? "communities" : view;
         $("#view").dataset.page = view;
         $$(".nav-item[data-view], .subnav-item[data-view]").forEach((a) => a.classList.toggle("active", a.dataset.view === navView));
@@ -243,6 +243,7 @@
             dashboard: renderDashboard,
             games: () => Games.mount($("#view"), user, hash),
             redeem: () => Redeem.mount($("#view")),
+            store: () => Store.mount($("#view"), user, hash),
             announcements: renderAnnouncements,
             admin: () => Admin.mount($("#view"), user, hash === "admin-reports" ? "reports" : null),
             developer: () => Developer.mount($("#view"), user),

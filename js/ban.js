@@ -35,7 +35,7 @@ const Ban = (() => {
           <p>They are signed out right away and shown a ban pop-up with this reason. They can message you from that pop-up.</p>
 
           <label class="field-label" for="bd-reason">Reason</label>
-          <input type="text" id="bd-reason" maxlength="300" placeholder="Shown to the user" value="${esc(reason)}" autocomplete="off" />
+          <input type="text" id="bd-reason" maxlength="300" placeholder="Required. The user sees this exact reason" value="${esc(reason)}" autocomplete="off" />
 
           <label class="field-label" for="bd-len">How long?</label>
           <select class="sel" id="bd-len">${PRESETS.map(([v, t]) => `<option value="${v}">${esc(String(t))}</option>`).join("")}</select>
@@ -89,6 +89,10 @@ const Ban = (() => {
             $(".ban-dialog").addEventListener("submit", (e) => {
                 e.preventDefault();
                 const m = minutes();
+                if ($("#bd-reason").value.trim().length < 3) {
+                    $("#bd-reason").focus();
+                    return ($("#bd-error").textContent = "Write the reason for the ban. The banned user will see it.");
+                }
                 if (Number.isNaN(m))
                     return ($("#bd-error").textContent = "Enter a whole number from 1 up to 10 years.");
                 done({ reason: $("#bd-reason").value.trim(), minutes: m });

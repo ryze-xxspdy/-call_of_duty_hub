@@ -88,3 +88,66 @@
 .ban-btn.ghost { background: transparent; color: var(--muted); }
 .ban-btn.primary { background: var(--accent); color: var(--on-accent); }
 .ban-btn:disabled { opacity: .6; cursor: default; }
+
+/* ---------- Verify email + notices ---------- */
+.form-notice { margin: 0 0 14px; padding: 10px 12px; border-radius: 4px; border: 1px solid rgba(34,176,125,.45); background: rgba(34,176,125,.1); color: #4fd6a1; font-size: 12.5px; line-height: 1.5; animation: lg-pop .35s ease both; }
+.field-hint { margin: 7px 0 0; font-size: 11.5px; line-height: 1.5; color: var(--muted); }
+.resend-row { margin: 6px 0 0; }
+.btn-pill.busy span::after { content: ""; display: inline-block; width: 12px; height: 12px; margin-left: 8px; vertical-align: -2px; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; animation: lg-spin .7s linear infinite; }
+.btn-pill:disabled { opacity: .75; cursor: default; filter: none; }
+a.btn-pill { text-decoration: none; }
+
+.vf-icon { width: 58px; height: 58px; margin: 0 0 18px; display: grid; place-items: center; border-radius: 16px; background: rgba(245,166,35,.12); color: var(--accent); animation: lg-float 3s ease-in-out infinite; }
+.vf-icon svg { width: 28px; height: 28px; }
+#panel-verify .auth-sub b { color: var(--text); overflow-wrap: anywhere; }
+.vf-open { margin-top: 0; }
+.vf-code { margin-top: 18px; border: 1px solid var(--line); border-radius: 4px; padding: 0 12px; background: var(--card); }
+.vf-code summary { padding: 11px 0; font-size: 12.5px; font-weight: 600; color: var(--muted); cursor: pointer; list-style: none; }
+.vf-code summary::-webkit-details-marker { display: none; }
+.vf-code summary::after { content: "+"; float: right; color: var(--accent); }
+.vf-code[open] summary::after { content: "–"; }
+.vf-code form { padding-bottom: 14px; }
+.vf-code .f-label { margin-top: 4px; }
+.vf-timer { color: var(--muted); }
+#vf-resend.disabled { opacity: .45; pointer-events: none; }
+
+/* ---------- Login animation (welcome screen) ---------- */
+body.lg-active { overflow: hidden; }
+.lg-overlay { position: fixed; inset: 0; z-index: 500; display: grid; place-items: center; background: radial-gradient(circle at 50% 42%, #101c33 0%, var(--bg) 70%); opacity: 0; clip-path: circle(0% at 50% 50%); transition: clip-path .6s cubic-bezier(.2,.8,.2,1), opacity .25s ease; }
+.lg-overlay.on { opacity: 1; clip-path: circle(150% at 50% 50%); }
+.lg-overlay.leave { opacity: 0; transition: opacity .35s ease; }
+.lg-stage { display: flex; flex-direction: column; align-items: center; text-align: center; padding: 24px; }
+.lg-ring { position: relative; width: 132px; height: 132px; display: grid; place-items: center; }
+.lg-ring svg { position: absolute; inset: 0; width: 100%; height: 100%; transform: rotate(-90deg); overflow: visible; }
+.lg-ring circle { fill: none; stroke-width: 4; }
+.lg-track { stroke: var(--line); }
+.lg-arc { stroke: var(--accent); stroke-linecap: round; stroke-dasharray: 327; stroke-dashoffset: 327; animation: lg-draw 1.5s .2s cubic-bezier(.5,0,.2,1) forwards; filter: drop-shadow(0 0 6px rgba(245,166,35,.55)); }
+.lg-check { fill: none; stroke: var(--accent); stroke-width: 6; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 90; stroke-dashoffset: 90; transform: rotate(90deg); transform-origin: 60px 60px; opacity: 0; }
+.lg-ring img { width: 56px; height: 56px; animation: lg-pulse 1.6s ease-in-out infinite; transition: opacity .25s, transform .25s; }
+.lg-overlay.done .lg-ring img { opacity: 0; transform: scale(.6); animation: none; }
+.lg-overlay.done .lg-check { opacity: 1; animation: lg-tick .45s ease forwards; }
+.lg-overlay.done .lg-arc { animation: none; stroke-dashoffset: 0; }
+.lg-title { margin: 26px 0 6px; font-family: var(--font-head); font-size: clamp(22px, 4vw, 30px); font-weight: 600; letter-spacing: -.2px; opacity: 0; animation: lg-rise .55s .25s ease forwards; }
+.lg-title span { color: var(--accent); }
+.lg-step { margin: 0 0 22px; min-height: 20px; font-size: 13.5px; color: var(--muted); opacity: 0; animation: lg-rise .55s .4s ease forwards; }
+.lg-bar { width: 200px; height: 3px; border-radius: 3px; background: var(--line); overflow: hidden; opacity: 0; animation: lg-rise .4s .5s ease forwards; }
+.lg-bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: var(--accent); animation: lg-fill 1.9s .35s cubic-bezier(.4,0,.2,1) forwards; }
+
+@keyframes lg-draw { to { stroke-dashoffset: 0; } }
+@keyframes lg-tick { to { stroke-dashoffset: 0; } }
+@keyframes lg-fill { to { width: 100%; } }
+@keyframes lg-rise { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes lg-pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+@keyframes lg-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-4px); } }
+@keyframes lg-spin { to { transform: rotate(360deg); } }
+@keyframes lg-pop { from { opacity: 0; transform: translateY(-4px); } to { opacity: 1; transform: none; } }
+
+/* Panels slide in when you switch between login / create account / verify */
+.auth-panel:not(.hidden) { animation: lg-rise .35s ease both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .lg-overlay, .lg-overlay.on { clip-path: none; transition: opacity .2s; }
+  .lg-arc, .lg-ring img, .vf-icon, .lg-bar i { animation: none; }
+  .lg-arc { stroke-dashoffset: 0; } .lg-bar i { width: 100%; }
+  .lg-title, .lg-step, .lg-bar, .auth-panel:not(.hidden) { animation: none; opacity: 1; }
+}

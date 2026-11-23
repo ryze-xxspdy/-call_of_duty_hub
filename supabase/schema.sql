@@ -2044,3 +2044,95 @@ create trigger global_messages_reject_banned before insert on public.global_mess
 do $$ begin
   begin alter publication supabase_realtime add table public.global_messages; exception when duplicate_object then null; end;
 end $$;
+
+
+-- =====================================================================
+-- 27) Points store: buy points with money through Maya (PayMaya) only        -- safe to re-run
+--     * point_packages  : what can be bought (edit prices / amounts here in the Table Editor).
+--     * point_purchases : one row per checkout. Written ONLY by the Edge Functions (service role), never by the browser.
+--     * Points are credited exactly once by credit_purchase(): it adds a row to point_gifts, which the
+--       signed-in browser already collects (claim_gifts), so the balance updates the same way gifts do.
+-- =====================================================================
+create table if not exists public.point_packages (
+  id        text primary key,
+  title     text not null,
+  emoji     text not null default '💎',
+  points    integer not null check (points > 0 and points <= 100000000),
+  bonus     integer not null default 0 check (bonus >= 0 and bonus <= 100000000),
+  price_php numeric(10,2) not null check (price_php >= 1),
+  badge     text not null default '',
+  sort      integer not null default 0,
+  active    boolean not null default true
+);
+
+create table if not exists public.point_purchases (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          uuid not null references public.profiles(id) on delete cascade,
+  package_id       text references public.point_packages(id) on delete set null,
+  package_title    text not null,
+  points           integer not null check (points > 0),          -- total credited (points + bonus)
+  amount_php       numeric(10,2) not null check (amount_php >= 1),
+  status           text not null default 'pending' check (status in ('pending', 'paid', 'failed', 'cancelled')),
+  maya_checkout_id text,
+  created_at       timestamptz not null default now(),
+  paid_at          timestamptz
+);
+create index if not exists point_purchases_user_idx on public.point_purchases (user_id, created_at desc);
+create index if not exists point_purchases_checkout_idx on public.point_purchases (maya_checkout_id) where maya_checkout_id is not null;
+
+alter table public.point_packages  enable row level security;
+alter table public.point_purchases enable row level security;
+
+drop policy if exists point_packages_read on public.point_packages;
+create policy point_packages_read on public.point_packages for select to authenticated
+  using (active or public.is_admin());
+
+drop policy if exists point_purchases_read on public.point_purchases;
+create policy point_purchases_read on public.point_purchases for select to authenticated
+  using (user_id = auth.uid() or public.is_admin());
+
+revoke all on public.point_packages  from anon, authenticated;
+revoke all on public.point_purchases from anon, authenticated;
+grant select on public.point_packages  to authenticated;
+grant select on public.point_purchases to authenticated;
+
+insert into public.point_packages (id, title, emoji, points, bonus, price_php, badge, sort) values
+  ('starter',  'Starter',  '⭐',   500,     0,  25, '',            1),
+  ('plus',     'Plus',     '✨',  1200,   100,  50, '',            2),
+  ('popular',  'Popular',  '🔥',  3000,   500, 100, 'Most popular', 3),
+  ('mega',     'Mega',     '💎',  8000,  2000, 250, '',            4),
+  ('ultimate', 'Ultimate', '👑', 20000,  6000, 500, 'Best value',  5)
+on conflict (id) do nothing;
+
+-- Credit a paid order once. Only the Edge Functions (service role) can run this.
+create or replace function public.credit_purchase(p_order uuid)
+returns boolean language plpgsql security definer set search_path = public as $$
+declare o public.point_purchases; nm text;
+begin
+  select * into o from public.point_purchases where id = p_order for update;
+  if not found then raise exception 'Order not found'; end if;
+  if o.status = 'paid' then return false; end if;           -- already credited: do nothing
+  update public.point_purchases set status = 'paid', paid_at = now() where id = o.id;
+  insert into public.point_gifts (to_user, from_user, from_name, amount)
+    values (o.user_id, null, 'Points Store', o.points);
+  insert into public.shop_activity (kind, actor_id, actor_name, by_name, item_emoji, amount)
+    select 'gift', o.user_id, coalesce(nullif(name, ''), 'A student'), 'Points Store', '💳', o.points
+    from public.profiles where id = o.user_id;
+  insert into public.notifications (user_id, kind, title, body, link, ref_id)
+    values (o.user_id, 'points_gift', '💳 Payment received: ' || to_char(o.points, 'FM999,999,999') || ' points!',
+            'Thanks! Your ' || o.package_title || ' pack is in your balance. Spend it in Redeem.', '#store', o.id);
+  return true;
+end $$;
+
+-- Mark an unpaid order as failed / cancelled (never touches a paid one).
+create or replace function public.close_purchase(p_order uuid, p_status text)
+returns void language plpgsql security definer set search_path = public as $$
+begin
+  if p_status not in ('failed', 'cancelled') then raise exception 'Bad status'; end if;
+  update public.point_purchases set status = p_status where id = p_order and status = 'pending';
+end $$;
+
+revoke all on function public.credit_purchase(uuid)        from public, anon, authenticated;
+revoke all on function public.close_purchase(uuid, text)   from public, anon, authenticated;
+grant execute on function public.credit_purchase(uuid)       to service_role;
+grant execute on function public.close_purchase(uuid, text)  to service_role;

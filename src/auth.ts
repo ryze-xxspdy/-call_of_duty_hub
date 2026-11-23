@@ -115,6 +115,11 @@ const Auth = (() => {
     const { data, error } = await client.auth.signInWithPassword({ email: email.trim(), password });
     if (error) {
       if (/banned/i.test(error.message)) throw await bannedError(email);
+      if (/not confirmed/i.test(error.message)) {
+        const e = new Error("Please verify your email first. Open the link we sent to your Gmail.");
+        e.unverified = true;
+        throw e;
+      }
       throw new Error(error.message === "Invalid login credentials" ? "Incorrect email or password." : error.message);
     }
     const profile = await fetchProfile(data.user);
@@ -128,16 +133,77 @@ const Auth = (() => {
     return profile;
   }
 
-  /** Returns { profile } when signed in, or { needsConfirm: true } if email confirmation is on. */
+  /** Where the link in the verification email brings the person back to (the login page shows "email verified"). */
+  const verifyRedirect = () => new URL("index.html?verified=1", location.href).href;
+
+  /**
+   * Creates the account. Supabase emails a verification link (and code) to the address, and the person has to
+   * confirm it before they can log in. Returns { needsConfirm: true } while the email is waiting to be confirmed.
+   * If "Confirm email" is switched OFF in Supabase there is nothing to verify: we sign out so the person logs in by hand.
+   */
   async function register({ name, email, password }) {
     if (!client) throw new Error("Supabase isn't configured yet. See README.");
+    if (cfg.ONLY_GMAIL && !/@gmail\.com$/i.test(email.trim())) throw new Error("Please use your Gmail address (name@gmail.com).");
     // Sign-up always makes a normal account; the database decides the role.
-    const { data, error } = await client.auth.signUp({ email: email.trim(), password, options: { data: { name: name.trim() } } });
+    const { data, error } = await client.auth.signUp({
+      email: email.trim(), password,
+      options: { data: { name: name.trim() }, emailRedirectTo: verifyRedirect() }
+    });
     if (error) throw new Error(error.message);
-    if (!data.session) return { needsConfirm: true };
-    const profile = await fetchProfile(data.user);
-    await recordLogin(profile);
-    return { profile };
+    // Supabase hides "already registered" for security: the fake user comes back with no identities.
+    if (data.user && data.user.identities && data.user.identities.length === 0)
+      throw new Error("An account with that email already exists. Please log in instead.");
+    if (data.session) {
+      console.warn("Email confirmation is OFF in Supabase (Authentication > Providers > Email). Turn on 'Confirm email' to verify Gmail addresses.");
+      await client.auth.signOut();
+      return { needsConfirm: false };
+    }
+    return { needsConfirm: true };
+  }
+
+  /** Sends the verification email (link + code) again. */
+  async function resendVerification(email) {
+    if (!client) throw new Error("Supabase isn't configured yet. See README.");
+    const { error } = await client.auth.resend({ type: "signup", email: email.trim(), options: { emailRedirectTo: verifyRedirect() } });
+    if (error) throw new Error(/rate|seconds/i.test(error.message) ? "Please wait a minute before asking for another email." : error.message);
+  }
+
+  /** The person typed the code from the email instead of clicking the link. Signs out afterwards: they log in next. */
+  async function verifyCode(email, token) {
+    if (!client) throw new Error("Supabase isn't configured yet. See README.");
+    const { error } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "signup" });
+    if (error) throw new Error(/expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Check it or ask for a new email." : error.message);
+    await client.auth.signOut();
+  }
+
+  /** Payment step 1: email a 6-digit code to the signed-in person's own address (uses the same Supabase mailer / Gmail SMTP). */
+  async function sendPaymentCode(email) {
+    if (!client) throw new Error("Supabase isn't configured yet. See README.");
+    if (!email) throw new Error("Your account has no email address to send the code to.");
+    const { error } = await client.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: false } });
+    if (error) throw new Error(/rate|seconds|too many/i.test(error.message) ? "Please wait a minute before asking for another code." : error.message);
+  }
+
+  /** Payment step 2: check the code. The new session is proof for the server that the code was entered just now. */
+  async function confirmPaymentCode(email, token) {
+    if (!client) throw new Error("Supabase isn't configured yet. See README.");
+    const { error } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "email" });
+    if (error) throw new Error(/expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Check it or send a new one." : error.message);
+  }
+
+  /**
+   * The person clicked the link in the email, so Supabase just signed them in from the address bar.
+   * We sign them out again (they log in properly next, with the animation) and return what happened.
+   */
+  async function finishVerification(): Promise<{ email: string; error: string }> {
+    const h = new URLSearchParams(location.hash.replace(/^#/, ""));
+    const err = h.get("error_description");
+    if (err) return { email: "", error: /expired|invalid/i.test(err) ? "That verification link has expired. Sign up again or press 'Resend'." : err.replace(/\+/g, " ") };
+    if (!client) return { email: "", error: "" };
+    const { data } = await client.auth.getSession();
+    const email = (data.session && data.session.user && data.session.user.email) || "";
+    if (data.session) await client.auth.signOut();
+    return { email, error: "" };
   }
 
   /** Sends a real password-reset email through Supabase. */
@@ -177,5 +243,5 @@ const Auth = (() => {
 
   const isStaff = (u) => !!u && (u.role === "admin" || u.role === "developer");
 
-  return { configured, isStaff, createAdmin, get client() { return client; }, login, register, resetPassword, currentUser, requireAuth, logout, checkBanned, takeBanNotice, banStatus, sendAppeal, banEnds };
+  return { configured, isStaff, createAdmin, get client() { return client; }, login, register, resendVerification, verifyCode, sendPaymentCode, confirmPaymentCode, finishVerification, resetPassword, currentUser, requireAuth, logout, checkBanned, takeBanNotice, banStatus, sendAppeal, banEnds };
 })();

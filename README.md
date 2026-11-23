@@ -11,8 +11,7 @@ Plain HTML + CSS, with the app code written in TypeScript / TSX and compiled to 
      Sign up with it right away. Already have an account with that email? Re-running the SQL promotes it.
    - Re-running on an existing project is safe; the old admin code is removed.
 3. **Project Settings → API**: copy the *Project URL* and the *anon public* key into `js/config.js`.
-4. (Easiest for testing) **Authentication → Providers → Email**: turn off *Confirm email*.
-   If you leave it on, new users must click the link in their email before they can log in.
+4. **Authentication → Providers → Email**: keep **Confirm email ON** (this is the Gmail / email verification, see below).
 
 ## 2. Run it
     cd studyhub
@@ -194,3 +193,57 @@ before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
   "Load earlier messages", a **New messages** pill when you're scrolled up, and an unread number on the sidebar link. Delete your own messages
   (admins / the developer can delete any). Banned accounts can't post, and there is a small anti-spam limit (6 messages / 10 seconds).
   **Re-run `supabase/schema.sql`** (section 25 was extended, section 26 is new) to add `notifications.ref_id`, `shop_activity` and `global_messages`.
+
+
+## Email (Gmail) verification, login animation, dashboard entrance
+- **Create account** sends a verification email (Supabase Auth). The screen then says *Verify your Gmail*, with an **Open Gmail** button,
+  **Resend** (60 s cooldown) and an optional box for the number code. The person can't log in until the email is confirmed
+  (trying anyway shows "verify your email first" with a Resend link).
+- After verifying (by link or code) they land on the **login page** with a green "Email verified" note, log in, see a **welcome animation**,
+  and the **dashboard animates in** (sidebar, top bar, content). Animations switch off for people with "reduce motion".
+- Supabase setup for this:
+  1. **Authentication → Providers → Email → Confirm email = ON**.
+  2. **Authentication → URL Configuration**: set **Site URL** to where you host the app and add it (e.g. `https://yoursite.com/index.html*`,
+     and `http://localhost:8000/index.html*` for testing) to **Redirect URLs**. The link in the email returns there.
+  3. (Optional, for the number code) **Authentication → Email Templates → Confirm signup**: add `{{ .Token }}` to the message.
+  4. Supabase's built-in mailer is rate-limited (a few emails per hour). For real use set your own SMTP under **Authentication → SMTP Settings**
+     (a Gmail app password or any SMTP provider works).
+- Want Gmail addresses only? Set `ONLY_GMAIL: true` in `src/config.ts` / `js/config.js`.
+
+## Points store: Gmail code before paying, faster checkout, thank-you
+- Pressing **Pay with Maya** emails a **6-digit code** to the buyer's own address (Supabase Auth, so it uses the same mailer / Gmail SMTP as sign-up).
+  They type it in, then go straight to Maya. The `maya-checkout` function refuses to start a checkout unless the session signed in with an emailed
+  code in the last 10 minutes, so the code can't be skipped by calling the function directly.
+- **One-time setup:** Supabase > Authentication > Email Templates > **Magic Link**: put `{{ .Token }}` in the message (for example
+  `Your StudyHub payment code is <b>{{ .Token }}</b>`). Without it the email only has a link and no code. Re-deploy: `supabase functions deploy maya-checkout`.
+  To switch the code check off for testing: `supabase secrets set PAYMENT_EMAIL_CODE=off`.
+- Speed: the function is woken up when the store opens, its database lookups run together, the order insert and Maya's checkout call run at the same time,
+  and after Maya sends the buyer back the page checks the payment every 0.7 s at first.
+- After a successful payment the buyer sees a **Thank you for buying!** window (and the existing "Payment received" notification).
+- A banned buyer can't pay: they are signed out and see the ban pop-up with the reason. Admins must now type a reason when banning, and the pop-up
+  says "No reason was given" for old bans that have none.
+
+## Points store (pay with Maya / PayMaya only)
+Sidebar → **Buy points**. Packs are rows in the `point_packages` table (edit prices / points / bonus in the Supabase Table Editor).
+Payment goes through **Maya Checkout**; points are added only after Maya confirms the payment, and exactly once.
+
+**Set it up (once):**
+1. Re-run `supabase/schema.sql` (adds section 27: packs, purchases, and the functions that credit points).
+2. Get your Maya keys (Maya Business Manager; the sandbox keys are in the Maya docs for testing).
+3. Install the Supabase CLI, then from this folder:
+
+       supabase login
+       supabase link --project-ref <your-project-ref>
+       supabase secrets set MAYA_PUBLIC_KEY=pk-xxxx MAYA_SECRET_KEY=sk-xxxx MAYA_ENV=sandbox
+       supabase functions deploy maya-checkout
+       supabase functions deploy maya-webhook --no-verify-jwt
+
+   Use `MAYA_ENV=production` with your live keys when you go live.
+4. In the Maya Manager, register the webhook URL `https://<your-project-ref>.supabase.co/functions/v1/maya-webhook`
+   for the `CHECKOUT_SUCCESS`, `CHECKOUT_FAILURE` and `CHECKOUT_DROPOUT` events. (Optional but recommended: it credits points even if the
+   buyer closes the tab. Without it, points are credited when they return to the site.)
+
+**How it stays safe:** the secret key only exists inside the Edge Functions, never in the browser. The browser can't create paid orders
+or add points: it only asks the function to check with Maya, and the function re-reads the payment from Maya (order id, status and amount)
+before calling `credit_purchase()`, which pays out once per order. Points arrive as a "Points Store" gift, collected by the same
+mechanism that already handles admin gifts. Test with the sandbox first (Maya publishes test wallet / card details in its docs).
