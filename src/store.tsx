@@ -1,6 +1,6 @@
 /* ---------- Points store: buy points with money (Maya / PayMaya only) ----------
-   1. The student picks a pack and presses "Pay with Maya". We email a 6-digit code to their Gmail and they type it in.
-   2. The `maya-checkout` Edge Function (only runs for a session that just entered that code) makes an unpaid order + a Maya checkout and we send the browser to Maya's page.
+   1. The student picks a pack and presses "Pay with Maya".
+   2. The `maya-checkout` Edge Function makes an unpaid order + a Maya checkout and we send the browser to Maya's page.
    3. Maya sends the student back to  #store-success-<order>  (or -failed / -cancel).
    4. We ask the Edge Function to verify the payment with Maya (the browser is never trusted), it credits the points once
       (as a "Points Store" gift), and Rewards.claimGifts() puts them in the balance right away.
@@ -35,7 +35,6 @@ const Store = (() => {
       if (!msg) msg = /not found|404|Failed to send/i.test(String(error.message))
         ? "The payment service isn't set up yet. The developer needs to deploy the Maya Edge Functions (see README)."
         : error.message;
-      if (/account is banned/i.test(msg) && me) Auth.checkBanned(me.id).then((b: boolean) => { if (b) location.replace("index.html"); });   // signs them out and shows the ban pop-up with the reason
       throw new Error(msg);
     }
     if (data && data.error) throw new Error(data.error);
@@ -51,112 +50,38 @@ const Store = (() => {
     document.body.appendChild(wrap);
   }
 
-  /** Pay window: summary -> Gmail code -> Maya. */
+  /** "Are you sure?" window, then off to Maya. */
   function confirmPay(pack: PointPack): void {
     modal((close) => {
-      const total = pack.points + pack.bonus;
-      const email: string = (me && me.email) || "";
-      const hidden = email.replace(/^(.{2}).*(@.*)$/, "$1•••$2");
-      let box!: HTMLElement;
-      let cooldown: any = null;
-
-      const summary = (
-        <div className="st-sum">
-          <div><span>Points</span><b>{num(pack.points)}</b></div>
-          {pack.bonus > 0 ? <div><span>Bonus</span><b className="st-plus">+{num(pack.bonus)}</b></div> : null}
-          <div className="st-total"><span>Total points</span><b>{num(total)}</b></div>
-          <div className="st-total"><span>You pay</span><b>{peso(pack.price_php)}</b></div>
-        </div>
-      );
-
-      /* step 1: summary + "Pay" (sends the code) */
-      const stepSummary = (note = "") => {
-        let btn!: HTMLButtonElement, err!: HTMLElement;
-        const go = async () => {
-          btn.disabled = true; btn.textContent = "Sending code…"; err.textContent = "";
-          try { await Auth.sendPaymentCode(email); stepCode(); }
-          catch (ex) { err.textContent = ex.message; btn.disabled = false; btn.textContent = "Pay with Maya"; }
-        };
-        mountInto(box,
-          <h3>{pack.emoji} {pack.title} pack</h3>,
-          <p>To keep your account safe we'll send a 6-digit code to <b>{hidden || "your Gmail"}</b> before you pay. Your points are added automatically once Maya confirms the payment.</p>,
-          summary,
-          <p className="st-err" role="alert" ref={(el: HTMLElement) => (err = el)}>{note}</p>,
+      let btn: HTMLButtonElement, err: HTMLElement;
+      const go = async () => {
+        btn.disabled = true; btn.textContent = "Opening Maya…"; err.textContent = "";
+        try {
+          const res = await call({ action: "create", package_id: pack.id, return_url: location.origin + location.pathname });
+          location.href = res.redirectUrl;
+        } catch (ex) {
+          err.textContent = ex.message;
+          btn.disabled = false; btn.textContent = "Pay with Maya";
+        }
+      };
+      return (
+        <div className="modal st-modal" role="dialog" aria-modal="true">
+          <h3>{pack.emoji} {pack.title} pack</h3>
+          <p>You'll pay on Maya's secure checkout page. Your points are added automatically once the payment goes through.</p>
+          <div className="st-sum">
+            <div><span>Points</span><b>{num(pack.points)}</b></div>
+            {pack.bonus > 0 ? <div><span>Bonus</span><b className="st-plus">+{num(pack.bonus)}</b></div> : null}
+            <div className="st-total"><span>Total points</span><b>{num(pack.points + pack.bonus)}</b></div>
+            <div className="st-total"><span>You pay</span><b>{peso(pack.price_php)}</b></div>
+          </div>
+          <p className="st-err" role="alert" ref={(el: HTMLElement) => (err = el)}></p>
           <div className="modal-actions">
             <button type="button" className="btn ghost" onClick={close}>Cancel</button>
             <button type="button" className="btn primary st-maya-btn" ref={(el: HTMLButtonElement) => (btn = el)} onClick={go}>Pay with Maya</button>
           </div>
-        );
-      };
-
-      /* step 2: type the code, then straight to Maya */
-      const stepCode = () => {
-        let input!: HTMLInputElement, btn!: HTMLButtonElement, err!: HTMLElement, resend!: HTMLButtonElement;
-        const startCooldown = () => {
-          let left = 60; resend.disabled = true; resend.textContent = `Send again (${left}s)`;
-          clearInterval(cooldown);
-          cooldown = setInterval(() => {
-            if (!resend.isConnected) return clearInterval(cooldown);
-            left--; if (left <= 0) { clearInterval(cooldown); resend.disabled = false; resend.textContent = "Send again"; }
-            else resend.textContent = `Send again (${left}s)`;
-          }, 1000);
-        };
-        let busy = false;
-        const submit = async () => {
-          const code = input.value.replace(/\D/g, "");
-          if (busy || code.length < 6) { if (code.length < 6) err.textContent = "Type the 6-digit code from your Gmail."; return; }
-          busy = true; btn.disabled = true; btn.textContent = "Checking…"; err.textContent = "";
-          try {
-            await Auth.confirmPaymentCode(email, code);
-            btn.textContent = "Opening Maya…";
-            const res = await call({ action: "create", package_id: pack.id, return_url: location.origin + location.pathname });
-            location.href = res.redirectUrl;
-          } catch (ex) {
-            err.textContent = ex.message; busy = false; btn.disabled = false; btn.textContent = "Verify & pay";
-            if (/wrong|expired/i.test(ex.message)) { input.value = ""; input.focus(); }
-          }
-        };
-        mountInto(box,
-          <h3>Enter your Gmail code</h3>,
-          <p>We sent a 6-digit code to <b>{hidden || "your Gmail"}</b>. It can take a few seconds to arrive. Check Spam too.</p>,
-          <input type="text" className="st-code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="••••••" aria-label="6-digit code"
-            ref={(el: HTMLInputElement) => (input = el)}
-            onInput={() => { input.value = input.value.replace(/\D/g, "").slice(0, 6); if (input.value.length === 6) submit(); }}
-            onKeydown={(e: KeyboardEvent) => { if (e.key === "Enter") submit(); }} />,
-          <p className="st-err" role="alert" ref={(el: HTMLElement) => (err = el)}></p>,
-          <div className="modal-actions">
-            <button type="button" className="btn ghost" ref={(el: HTMLButtonElement) => (resend = el)} onClick={async () => {
-              err.textContent = "";
-              try { await Auth.sendPaymentCode(email); startCooldown(); err.textContent = "New code sent."; err.classList.add("ok"); }
-              catch (ex) { err.classList.remove("ok"); err.textContent = ex.message; }
-            }}>Send again</button>
-            <button type="button" className="btn primary st-maya-btn" ref={(el: HTMLButtonElement) => (btn = el)} onClick={submit}>Verify & pay</button>
-          </div>
-        );
-        startCooldown();
-        input.focus();
-      };
-
-      const win = <div className="modal st-modal" role="dialog" aria-modal="true" ref={(el: HTMLElement) => (box = el)}></div>;
-      stepSummary();
-      return win;
-    });
-  }
-
-  /** "Thank you for buying" window after a successful payment. */
-  function thankYou(pts: number, orderId: string): void {
-    modal((close) => (
-      <div className="modal st-modal st-thanks" role="dialog" aria-modal="true">
-        <div className="st-thanks-icon" aria-hidden="true">✓</div>
-        <h3>Thank you for buying!</h3>
-        <p>Your payment went through and <b>{num(pts)} points</b> are now in your balance. Enjoy, and good luck with your studies!</p>
-        <p className="st-order-no">Order #{orderId.slice(0, 8).toUpperCase()}</p>
-        <div className="modal-actions">
-          <button type="button" className="btn ghost" onClick={close}>Close</button>
-          <a className="btn primary" href="#redeem" onClick={close}>Spend points</a>
         </div>
-      </div>
-    ));
+      );
+    });
   }
 
   /* ---------- page ---------- */
@@ -225,7 +150,7 @@ const Store = (() => {
     }
     mountInto(slot, banner("checking", "Confirming your payment with Maya…", "This only takes a moment."));
     let status = "pending", pts = 0;
-    for (let i = 0; i < 15 && mine === token; i++) {
+    for (let i = 0; i < 6 && mine === token; i++) {
       try {
         const r = await call({ action: "verify", order_id: orderId });
         status = r.status; pts = r.points || 0;
@@ -234,14 +159,13 @@ const Store = (() => {
         mountInto(slot, banner("failed", "We couldn't confirm the payment yet", ex.message));
         return refresh();
       }
-      await new Promise((r) => setTimeout(r, i < 3 ? 700 : 1500));   // check quickly at first: the payment is usually already confirmed
+      await new Promise((r) => setTimeout(r, 2000));
     }
     if (mine !== token) return;
     if (status === "paid") {
       await Rewards.claimGifts();                         // puts the new points in the balance right now
-      mountInto(slot, banner("paid", `Thank you for buying! ${num(pts)} points added.`, "They're in your balance. Spend them in Redeem."));
-      Utils.toast(`🎉 Thank you! +${num(pts)} points added`, 4000);
-      thankYou(pts, orderId);
+      mountInto(slot, banner("paid", `Payment received! ${num(pts)} points added.`, "They're in your balance. Spend them in Redeem."));
+      Utils.toast(`🎉 +${num(pts)} points added!`, 4000);
     } else if (status === "failed" || kind === "failed") {
       mountInto(slot, banner("failed", "The payment didn't go through", "No points were added. You can try again."));
     } else {
@@ -278,7 +202,6 @@ const Store = (() => {
     );
 
     paintBalance(bal);
-    if (!/^store-(success|failed|cancel)-/i.test(hash)) call({ action: "ping" }).catch(() => {});   // wakes the payment function up so "Pay" is quick
     if (!rewardsHooked) { rewardsHooked = true; Rewards.on(() => { const b = root && root.querySelector(".st-balance"); if (b && location.hash.startsWith("#store")) paintBalance(b); }); }
 
     const refresh = () => { if (mine === token) paintHistory(hist, mine); };

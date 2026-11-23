@@ -176,21 +176,6 @@ const Auth = (() => {
     await client.auth.signOut();
   }
 
-  /** Payment step 1: email a 6-digit code to the signed-in person's own address (uses the same Supabase mailer / Gmail SMTP). */
-  async function sendPaymentCode(email) {
-    if (!client) throw new Error("Supabase isn't configured yet. See README.");
-    if (!email) throw new Error("Your account has no email address to send the code to.");
-    const { error } = await client.auth.signInWithOtp({ email: email.trim(), options: { shouldCreateUser: false } });
-    if (error) throw new Error(/rate|seconds|too many/i.test(error.message) ? "Please wait a minute before asking for another code." : error.message);
-  }
-
-  /** Payment step 2: check the code. The new session is proof for the server that the code was entered just now. */
-  async function confirmPaymentCode(email, token) {
-    if (!client) throw new Error("Supabase isn't configured yet. See README.");
-    const { error } = await client.auth.verifyOtp({ email: email.trim(), token: token.trim(), type: "email" });
-    if (error) throw new Error(/expired|invalid/i.test(error.message) ? "That code is wrong or has expired. Check it or send a new one." : error.message);
-  }
-
   /**
    * The person clicked the link in the email, so Supabase just signed them in from the address bar.
    * We sign them out again (they log in properly next, with the animation) and return what happened.
@@ -243,5 +228,5 @@ const Auth = (() => {
 
   const isStaff = (u) => !!u && (u.role === "admin" || u.role === "developer");
 
-  return { configured, isStaff, createAdmin, get client() { return client; }, login, register, resendVerification, verifyCode, sendPaymentCode, confirmPaymentCode, finishVerification, resetPassword, currentUser, requireAuth, logout, checkBanned, takeBanNotice, banStatus, sendAppeal, banEnds };
+  return { configured, isStaff, createAdmin, get client() { return client; }, login, register, resendVerification, verifyCode, finishVerification, resetPassword, currentUser, requireAuth, logout, checkBanned, takeBanNotice, banStatus, sendAppeal, banEnds };
 })();

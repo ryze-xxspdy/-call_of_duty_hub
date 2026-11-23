@@ -17,7 +17,7 @@
         <p class="ban-lead" id="ban-desc">${ends
           ? `You can log in again on <b>${esc(ends)}</b>.`
           : `This ban has no end date. Only the developer can lift it.`}</p>
-        <div class="ban-reason"><small>Reason</small><p>${esc(info.reason || "No reason was given. Please message the developer below if you want to know why.")}</p></div>
+        ${info.reason ? `<div class="ban-reason"><small>Reason</small><p>${esc(info.reason)}</p></div>` : ""}
         <form class="ban-form" novalidate>
           <label class="ban-label" for="ban-msg">Think this is a mistake? Contact the developer / admin</label>
           <textarea id="ban-msg" rows="3" maxlength="500" placeholder="Write your message…"></textarea>

@@ -210,19 +210,6 @@ before `games.js`, and list it in `REGISTRY` in `src/games/games.tsx`.
      (a Gmail app password or any SMTP provider works).
 - Want Gmail addresses only? Set `ONLY_GMAIL: true` in `src/config.ts` / `js/config.js`.
 
-## Points store: Gmail code before paying, faster checkout, thank-you
-- Pressing **Pay with Maya** emails a **6-digit code** to the buyer's own address (Supabase Auth, so it uses the same mailer / Gmail SMTP as sign-up).
-  They type it in, then go straight to Maya. The `maya-checkout` function refuses to start a checkout unless the session signed in with an emailed
-  code in the last 10 minutes, so the code can't be skipped by calling the function directly.
-- **One-time setup:** Supabase > Authentication > Email Templates > **Magic Link**: put `{{ .Token }}` in the message (for example
-  `Your StudyHub payment code is <b>{{ .Token }}</b>`). Without it the email only has a link and no code. Re-deploy: `supabase functions deploy maya-checkout`.
-  To switch the code check off for testing: `supabase secrets set PAYMENT_EMAIL_CODE=off`.
-- Speed: the function is woken up when the store opens, its database lookups run together, the order insert and Maya's checkout call run at the same time,
-  and after Maya sends the buyer back the page checks the payment every 0.7 s at first.
-- After a successful payment the buyer sees a **Thank you for buying!** window (and the existing "Payment received" notification).
-- A banned buyer can't pay: they are signed out and see the ban pop-up with the reason. Admins must now type a reason when banning, and the pop-up
-  says "No reason was given" for old bans that have none.
-
 ## Points store (pay with Maya / PayMaya only)
 Sidebar → **Buy points**. Packs are rows in the `point_packages` table (edit prices / points / bonus in the Supabase Table Editor).
 Payment goes through **Maya Checkout**; points are added only after Maya confirms the payment, and exactly once.
